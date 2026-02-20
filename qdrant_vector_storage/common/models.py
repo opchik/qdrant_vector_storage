@@ -18,16 +18,6 @@ class FileType(str, Enum):
     MD = "md"
 
 
-# class CollectionConfig(BaseModel):
-#     """Configuration for collection creation."""
-#     name: str = Field(..., description="Collection name", min_length=1)
-#     vector_size: int = Field(..., description="Vector dimension", gt=0)
-#     distance: Distance = Field(default=Distance.COSINE, description="Distance metric")
-#     on_disk_payload: bool = Field(default=True, description="Store payload on disk")
-    
-#     model_config = ConfigDict(use_enum_values=True, frozen=True)
-
-
 class Point(BaseModel):
     """Point model for upload."""
     id: Optional[str] = Field(default=None, description="Point ID")
@@ -62,21 +52,3 @@ class TextChunk(BaseModel):
     index: int = Field(..., description="Chunk index", ge=0)
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Chunk metadata")
     vector: Optional[List[float]] = Field(default=None, description="Point vector")
-
-
-class EmbeddingModel(str, Enum):
-    """Available embedding models"""
-    
-    INTFLOAT_MULTILINGUAL_E5_SMALL = "intfloat/multilingual-e5-small"
-    INTFLOAT_MULTILINGUAL_E5_BASE = "intfloat/multilingual-e5-base"
-    INTFLOAT_MULTILINGUAL_E5_LARGE = "intfloat/multilingual-e5-large"
-    
-    @property
-    def dimension(self) -> int:
-        """Get embedding dimension for the model"""
-        dimensions = {
-            "intfloat/multilingual-e5-small": 384,
-            "intfloat/multilingual-e5-base": 768,
-            "intfloat/multilingual-e5-large": 1024,
-        }
-        return dimensions.get(self.value, 384)

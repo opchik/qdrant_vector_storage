@@ -8,7 +8,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models
 from qdrant_client.http.exceptions import UnexpectedResponse
 
-from ..common.base import BaseParser, FilterBuilder
+from ..common.base import MarkdownProcessor, FilterBuilder
 from ..common.models import Point, SearchResult, FileUploadResult, FileType, Distance
 from ..common.exceptions import (
     QdrantError, CollectionNotFoundError, CollectionExistsError,
@@ -31,8 +31,8 @@ class QdrantSyncClient:
     
     def __init__(
         self,
-        url: Optional[str] = None,
-        api_key: Optional[str] = None,
+        url: str,
+        api_key: str,
         timeout: int = 60,
         **kwargs
     ):
@@ -198,101 +198,101 @@ class QdrantSyncClient:
             logger.error(f"Failed to upload points: {e}")
             raise QdrantError(f"Point upload failed: {e}") from e
     
-    def upload_file(
-        self,
-        collection_name: str,
-        file_path: str,
-        embedder: Callable[[str], List[float]],
-        chunk_size: int = 1000,
-        chunk_overlap: int = 200,
-        metadata: Optional[Dict[str, Any]] = None,
-        batch_size: int = 100
-    ) -> FileUploadResult:
-        """
-        Upload file to collection.
+    # def upload_file(
+    #     self,
+    #     collection_name: str,
+    #     file_path: str,
+    #     embedder: Callable[[str], List[float]],
+    #     chunk_size: int = 1000,
+    #     chunk_overlap: int = 200,
+    #     metadata: Optional[Dict[str, Any]] = None,
+    #     batch_size: int = 100
+    # ) -> FileUploadResult:
+    #     """
+    #     Upload file to collection.
         
-        Supported formats: MD
+    #     Supported formats: MD
         
-        Args:
-            collection_name: Collection name
-            file_path: Path to file
-            embedder: Function to generate embeddings
-            chunk_size: Chunk size in characters
-            chunk_overlap: Chunk overlap
-            metadata: Additional metadata
-            batch_size: Upload batch size
+    #     Args:
+    #         collection_name: Collection name
+    #         file_path: Path to file
+    #         embedder: Function to generate embeddings
+    #         chunk_size: Chunk size in characters
+    #         chunk_overlap: Chunk overlap
+    #         metadata: Additional metadata
+    #         batch_size: Upload batch size
             
-        Returns:
-            Upload result
-        """
-        try:
-            # Parse file
-            chunks = BaseParser.parse_file(file_path, chunk_size, chunk_overlap)
+    #     Returns:
+    #         Upload result
+    #     """
+    #     try:
+    #         # Parse file
+    #         chunks = BaseParser.parse_file(file_path, chunk_size, chunk_overlap)
             
-            if not chunks:
-                raise FileProcessingError("No text content extracted from file")
+    #         if not chunks:
+    #             raise FileProcessingError("No text content extracted from file")
             
-            # Create points with embeddings
-            points = []
-            file_metadata = {
-                "source": file_path,
-                "file_name": file_path.split('/')[-1],
-                "chunk_size": chunk_size,
-                "chunk_overlap": chunk_overlap,
-                **(metadata or {})
-            }
+    #         # Create points with embeddings
+    #         points = []
+    #         file_metadata = {
+    #             "source": file_path,
+    #             "file_name": file_path.split('/')[-1],
+    #             "chunk_size": chunk_size,
+    #             "chunk_overlap": chunk_overlap,
+    #             **(metadata or {})
+    #         }
             
-            for chunk in chunks:
-                # Generate embedding
-                try:
-                    vector = embedder(chunk.text)
-                except Exception as e:
-                    raise EmbeddingError(f"Failed to generate embedding: {e}")
+    #         for chunk in chunks:
+    #             # Generate embedding
+    #             try:
+    #                 vector = embedder(chunk.text)
+    #             except Exception as e:
+    #                 raise EmbeddingError(f"Failed to generate embedding: {e}")
                 
-                # Combine metadata
-                chunk_metadata = {
-                    **file_metadata,
-                    **chunk.metadata,
-                    "chunk_index": chunk.index
-                }
+    #             # Combine metadata
+    #             chunk_metadata = {
+    #                 **file_metadata,
+    #                 **chunk.metadata,
+    #                 "chunk_index": chunk.index
+    #             }
                 
-                doc = Point(
-                    text=chunk.text,
-                    metadata=chunk_metadata,
-                    vector=vector
-                )
-                points.append(doc)
+    #             doc = Point(
+    #                 text=chunk.text,
+    #                 metadata=chunk_metadata,
+    #                 vector=vector
+    #             )
+    #             points.append(doc)
             
-            # Upload points
-            doc_ids = self.upload_points(
-                collection_name=collection_name,
-                points=points,
-                batch_size=batch_size
-            )
+    #         # Upload points
+    #         doc_ids = self.upload_points(
+    #             collection_name=collection_name,
+    #             points=points,
+    #             batch_size=batch_size
+    #         )
             
-            # Determine file type
-            ext = file_path.split('.')[-1].lower()
-            file_type = FileType.MD
-            if ext == 'json':
-                file_type = FileType.JSON
-            elif ext in ['html', 'htm']:
-                file_type = FileType.HTML
-            elif ext in ['tex', 'latex']:
-                file_type = FileType.LATEX
+    #         # Determine file type
+    #         ext = file_path.split('.')[-1].lower()
+    #         file_type = FileType.MD
+    #         if ext == 'json':
+    #             file_type = FileType.JSON
+    #         elif ext in ['html', 'htm']:
+    #             file_type = FileType.HTML
+    #         elif ext in ['tex', 'latex']:
+    #             file_type = FileType.LATEX
             
-            result = FileUploadResult(
-                file_name=file_path.split('/')[-1],
-                file_type=file_type,
-                chunks_uploaded=len(points),
-                point_ids=doc_ids,
-                collection_name=collection_name
-            )
+    #         result = FileUploadResult(
+    #             file_name=file_path.split('/')[-1],
+    #             file_type=file_type,
+    #             chunks_uploaded=len(points),
+    #             point_ids=doc_ids,
+    #             collection_name=collection_name
+    #         )
             
-            return result
+    #         return result
             
-        except Exception as e:
-            logger.error(f"Failed to upload file: {e}")
-            raise
+    #     except Exception as e:
+    #         logger.error(f"Failed to upload file: {e}")
+    #         raise
     
     # ==================== Point Deletion ====================
     

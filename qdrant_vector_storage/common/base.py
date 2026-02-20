@@ -1,600 +1,475 @@
+import os
 import re
 import base64
-import hashlib
 from pathlib import Path
-from datetime import datetime
-from fastembed import TextEmbedding
-from typing import List, Optional, Dict, Any, Union, Literal
+from dataclasses import dataclass
+from qdrant_client.http import models
+from typing import Any, Dict, List, Optional, Sequence, Union
 
-from .models import EmbeddingModel, TextChunk
+from .models import TextChunk
 
 
 class MarkdownProcessor:
+    """
+    Чанкер Markdown + расчёт эмбеддингов через fastembed.
+
+    Вход:
+      - строка Markdown
+      - base64(Markdown)
+      - путь к .md
+
+    Выход:
+      - List[TextChunk] (vector заполнен)
+
+    Примечание для E5:
+      - Для документов рекомендуется префикс "passage: "
+      - Для запросов — "query: "
+    """
+
+    _BASE64_RE = re.compile(r"^[A-Za-z0-9+/=\s]+$")
+
     def __init__(
-        self, 
-        config: Optional[Dict[str, Any]] = None,
-        embedding_model: Union[EmbeddingModel, str] = EmbeddingModel.INTFLOAT_MULTILINGUAL_E5_SMALL,
-    ):
-        """
-        Initialize Markdown processor with embedding support.
-        
-        Args:
-            config: Configuration dictionary for chunking
-            embedding_model: Model to use for embeddings (intfloat/multilingual-e5-*)
-        """
-        self.config = config or {
-            "chunk_size": 500,      # максимальный размер чанка в символах
-            "chunk_overlap": 50,     # перекрытие между чанками
-            "min_chunk_size": 100,   # минимальный размер чанка
-            "split_by_headers": True, # разбивать по заголовкам
-            "batch_size": 32,        # размер батча для эмбеддингов
-        }
-        
-        # Настройка модели эмбеддингов
-        if isinstance(embedding_model, str):
-            self.embedding_model = EmbeddingModel(embedding_model)
-        else:
-            self.embedding_model = embedding_model
-        
-        self.embedding_service = None
-        self._init_embedding_service()
-        
-        self._init_processing()
-    
-    def _init_embedding_service(self):
-        """Инициализация сервиса эмбеддингов через FastEmbed"""
-        try:
-            self.embedding_service = TextEmbedding(model_name=self.embedding_model.value)
-        except ImportError:
-            raise ImportError("Please install fastembed: pip install fastembed")
-        except Exception as e:
-            raise RuntimeError(f"Failed to load embedding model: {e}")
-    
-    def set_embedding_model(self, model: Union[EmbeddingModel, str]):
-        """Change embedding model"""
-        if isinstance(model, str):
-            self.embedding_model = EmbeddingModel(model)
-        else:
-            self.embedding_model = model
-        
-        self._init_embedding_service()
-        return self
-    
-    def _init_processing(self):
-        """Инициализация/сброс состояния"""
-        self.raw_text = None
-        self.parsed_structure = []  # список блоков
-        self.chunks = []             # промежуточные чанки
-        self.final_chunks = []       # готовые TextChunk
-        self.source_info = {
-            "source": "unknown",
-            "load_time": datetime.now().isoformat(),
-            "embedding_model": self.embedding_model.value,
-            "embedding_dimension": self.embedding_model.dimension
-        }
-    
-    # Методы загрузки
-    def load_from_file(self, file_path: str) -> 'MarkdownProcessor':
-        """Загрузка из файла"""
-        path = Path(file_path)
-        if not path.exists():
-            raise FileNotFoundError(f"Файл не найден: {file_path}")
-        
-        with open(path, 'r', encoding='utf-8') as f:
-            self.raw_text = f.read()
-        
-        self.source_info.update({
-            "source": str(path),
-            "filename": path.name,
-            "file_size": path.stat().st_size,
-            "source_type": "file"
-        })
-        
-        return self
-    
-    def load_from_base64(self, file_base64: Union[str, bytes]) -> 'MarkdownProcessor':
-        """Загрузка из base64 строки"""
-        try:
-            if isinstance(file_base64, str):
-                decoded_bytes = base64.b64decode(file_base64)
-            else:
-                decoded_bytes = file_base64
-            
-            self.raw_text = decoded_bytes.decode('utf-8')
-            
-            self.source_info.update({
-                "source": "base64_input",
-                "source_type": "base64",
-                "original_size": len(file_base64) if isinstance(file_base64, str) else len(file_base64)
-            })
-        except Exception as e:
-            raise ValueError(f"Ошибка декодирования base64: {e}")
-        
-        return self
-    
-    def load_from_text(self, text: str, source_name: str = "text_input") -> 'MarkdownProcessor':
-        """Загрузка из текстовой строки"""
-        self.raw_text = text
-        self.source_info.update({
-            "source": source_name,
-            "source_type": "direct_text",
-            "text_length": len(text)
-        })
-        
-        return self
-    
-    # Методы обработки
-    def parse(self) -> 'MarkdownProcessor':
-        """Парсинг Markdown и создание структурированных блоков"""
-        if not self.raw_text:
-            raise ValueError("Нет текста для парсинга. Сначала загрузите данные.")
-        
-        lines = self.raw_text.split('\n')
-        current_block = {
-            "type": "text",
-            "content": "",
-            "headers": [],
-            "start_line": 0
-        }
-        
-        in_code_block = False
-        code_block_lang = None
-        
-        for i, line in enumerate(lines):
-            # Проверка на начало/конец блока кода
-            if line.startswith('```'):
-                if not in_code_block:
-                    # Начало блока кода
-                    if current_block["content"].strip():
-                        self.parsed_structure.append(current_block)
-                    
-                    in_code_block = True
-                    code_block_lang = line[3:].strip() or "text"
-                    current_block = {
-                        "type": "code",
-                        "language": code_block_lang,
-                        "content": "",
-                        "headers": [],
-                        "start_line": i
-                    }
-                else:
-                    # Конец блока кода
-                    current_block["content"] = current_block["content"].rstrip()
-                    self.parsed_structure.append(current_block)
-                    in_code_block = False
-                    current_block = {
-                        "type": "text",
-                        "content": "",
-                        "headers": [],
-                        "start_line": i + 1
-                    }
-                continue
-            
-            if in_code_block:
-                current_block["content"] += line + "\n"
-                continue
-            
-            # Проверка на заголовок
-            header_match = re.match(r'^(#{1,6})\s+(.+)$', line.strip())
-            if header_match:
-                # Сохраняем предыдущий блок
-                if current_block["content"].strip():
-                    self.parsed_structure.append(current_block)
-                
-                # Создаем новый блок-заголовок
-                level = len(header_match.group(1))
-                title = header_match.group(2).strip()
-                current_block = {
-                    "type": "header",
-                    "level": level,
-                    "content": title,
-                    "raw": line,
-                    "headers": [{"level": level, "title": title}],
-                    "start_line": i
-                }
-                self.parsed_structure.append(current_block)
-                
-                # Новый блок для текста после заголовка
-                current_block = {
-                    "type": "text",
-                    "content": "",
-                    "headers": [{"level": level, "title": title}],
-                    "start_line": i + 1
-                }
-            
-            # Проверка на список
-            elif re.match(r'^[\*\-\+]\s+', line.strip()) or re.match(r'^\d+\.\s+', line.strip()):
-                if current_block["type"] != "list":
-                    if current_block["content"].strip():
-                        self.parsed_structure.append(current_block)
-                    current_block = {
-                        "type": "list",
-                        "content": line + "\n",
-                        "headers": current_block.get("headers", []),
-                        "start_line": i
-                    }
-                else:
-                    current_block["content"] += line + "\n"
-            
-            # Обычный текст
-            else:
-                if current_block["type"] not in ["text", "list"]:
-                    if current_block["content"].strip():
-                        self.parsed_structure.append(current_block)
-                    current_block = {
-                        "type": "text",
-                        "content": line + "\n",
-                        "headers": [],
-                        "start_line": i
-                    }
-                else:
-                    current_block["content"] += line + "\n"
-        
-        # Добавляем последний блок
-        if current_block["content"].strip():
-            self.parsed_structure.append(current_block)
-        
-        return self
-    
-    def split(self) -> 'MarkdownProcessor':
-        """Разбиение на чанки с учетом структуры и размера"""
-        if not self.parsed_structure:
-            raise ValueError("Нет структуры для разбиения. Сначала вызовите parse().")
-        
-        chunk_size = self.config["chunk_size"]
-        chunk_overlap = self.config["chunk_overlap"]
-        min_chunk_size = self.config["min_chunk_size"]
-        
-        current_chunk = {
-            "text": "",
-            "headers": [],
-            "blocks": [],
-            "start_block": 0
-        }
-        current_size = 0
-        
-        for i, block in enumerate(self.parsed_structure):
-            block_text = block["content"]
-            block_size = len(block_text)
-            
-            # Блоки кода всегда отдельно
-            if block["type"] == "code" and block_size > 0:
-                if current_chunk["text"]:
-                    self.chunks.append(current_chunk)
-                
-                self.chunks.append({
-                    "text": f"```{block.get('language', '')}\n{block_text}```",
-                    "headers": block.get("headers", []),
-                    "blocks": [block],
-                    "type": "code"
-                })
-                current_chunk = {
-                    "text": "",
-                    "headers": [],
-                    "blocks": [],
-                    "start_block": i + 1
-                }
-                current_size = 0
-                continue
-            
-            # Если блок слишком большой, разбиваем его
-            if block_size > chunk_size:
-                if current_chunk["text"]:
-                    self.chunks.append(current_chunk)
-                
-                # Разбиваем большой блок
-                parts = self._split_text(block_text, chunk_size, chunk_overlap)
-                for j, part in enumerate(parts):
-                    self.chunks.append({
-                        "text": part,
-                        "headers": block.get("headers", []),
-                        "blocks": [block],
-                        "part": j,
-                        "type": "text"
-                    })
-                
-                current_chunk = {
-                    "text": "",
-                    "headers": [],
-                    "blocks": [],
-                    "start_block": i + 1
-                }
-                current_size = 0
-                continue
-            
-            # Если текущий чанк + новый блок превышают размер
-            if current_size + block_size > chunk_size and current_chunk["text"]:
-                # Проверяем, что чанк не слишком маленький
-                if current_size >= min_chunk_size:
-                    self.chunks.append(current_chunk)
-                
-                # Начинаем новый чанк с перекрытием
-                overlap_text = ""
-                if chunk_overlap > 0 and current_chunk["text"]:
-                    # Берем последние chunk_overlap символов из предыдущего чанка
-                    overlap_text = current_chunk["text"][-chunk_overlap:]
-                
-                current_chunk = {
-                    "text": overlap_text + block_text,
-                    "headers": block.get("headers", []),
-                    "blocks": [block],
-                    "start_block": i
-                }
-                current_size = len(current_chunk["text"])
-            else:
-                # Добавляем блок к текущему чанку
-                if current_chunk["text"]:
-                    current_chunk["text"] += "\n\n" + block_text
-                else:
-                    current_chunk["text"] = block_text
-                
-                # Обновляем заголовки
-                if block.get("headers"):
-                    current_chunk["headers"].extend(block["headers"])
-                
-                current_chunk["blocks"].append(block)
-                current_size += block_size + 2  # +2 за разделитель
-        
-        # Добавляем последний чанк
-        if current_chunk["text"] and current_size >= min_chunk_size:
-            self.chunks.append(current_chunk)
-        
-        return self
-    
-    def _split_text(self, text: str, chunk_size: int, overlap: int) -> List[str]:
-        """Вспомогательный метод для разбиения длинного текста"""
-        parts = []
-        start = 0
-        text_len = len(text)
-        
-        while start < text_len:
-            end = min(start + chunk_size, text_len)
-            
-            # Ищем границу предложения или абзаца
-            if end < text_len:
-                # Пробуем найти конец предложения
-                last_period = text.rfind('. ', start, end)
-                if last_period > start + chunk_size // 2:
-                    end = last_period + 1
-                else:
-                    # Ищем границу слова
-                    last_space = text.rfind(' ', start, end)
-                    if last_space > start:
-                        end = last_space
-            
-            parts.append(text[start:end].strip())
-            start = end - overlap if overlap > 0 else end
-        
-        return parts
-    
-    def clean(self) -> 'MarkdownProcessor':
-        """Очистка текста от Markdown разметки"""
-        if not self.chunks:
-            # Если split не вызывали, но parse был
-            if self.parsed_structure:
-                self.split()
-            else:
-                raise ValueError("Нет данных для очистки")
-        
-        for chunk in self.chunks:
-            text = chunk["text"]
-            
-            # Сохраняем код-блоки без изменений
-            if chunk.get("type") == "code":
-                chunk["cleaned_text"] = text
-                continue
-            
-            # Удаляем markdown синтаксис
-            # Изображения
-            text = re.sub(r'!\[.*?\]\(.*?\)', '', text)
-            
-            # Ссылки (оставляем только текст)
-            text = re.sub(r'\[(.*?)\]\(.*?\)', r'\1', text)
-            
-            # Жирный текст **text** или __text__
-            text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
-            text = re.sub(r'__(.*?)__', r'\1', text)
-            
-            # Курсив *text* или _text_
-            text = re.sub(r'\*(.*?)\*', r'\1', text)
-            text = re.sub(r'_(.*?)_', r'\1', text)
-            
-            # Код `code`
-            text = re.sub(r'`(.*?)`', r'\1', text)
-            
-            # Блоки кода ```code```
-            text = re.sub(r'```.*?```', '', text, flags=re.DOTALL)
-            
-            # HTML теги
-            text = re.sub(r'<[^>]+>', '', text)
-            
-            # Убираем множественные пустые строки
-            text = re.sub(r'\n\s*\n', '\n\n', text)
-            
-            # Убираем пробелы в начале и конце строк
-            text = '\n'.join(line.strip() for line in text.split('\n'))
-            
-            # Финальная очистка
-            text = text.strip()
-            
-            chunk["cleaned_text"] = text
-        
-        return self
-    
-    def enrich(self) -> 'MarkdownProcessor':
-        """Добавление метаданных"""
-        if not self.chunks:
-            raise ValueError("Нет чанков для обогащения метаданными")
-        
-        for idx, chunk in enumerate(self.chunks):
-            # Берем очищенный текст или оригинал
-            text = chunk.get("cleaned_text", chunk["text"])
-            
-            if not text.strip():
-                continue  # Пропускаем пустые чанки
-            
-            # Собираем все заголовки из блока
-            all_headers = []
-            header_path = []
-            for h in chunk.get("headers", []):
-                if isinstance(h, dict):
-                    all_headers.append(h.get("title", str(h)))
-                    header_path.append(h.get("title", str(h)))
-                else:
-                    all_headers.append(str(h))
-                    header_path.append(str(h))
-            
-            # Создаем метаданные
-            metadata = {
-                "source": self.source_info.get("filename", self.source_info.get("source", "unknown")),
-                "source_type": self.source_info.get("source_type", "unknown"),
-                "chunk_id": idx,
-                "chunk_size": len(text),
-                "word_count": len(text.split()),
-                "char_count": len(text),
-                "headers": all_headers,
-                "header_path": " > ".join(header_path) if header_path else None,
-                "block_types": list(set(b.get("type") for b in chunk.get("blocks", []))),
-                "has_code": any(b.get("type") == "code" for b in chunk.get("blocks", [])),
-                "hash": hashlib.md5(text.encode()).hexdigest()[:8],
-                "created_at": datetime.now().isoformat(),
-                "embedding_model": self.embedding_model.value,
-                "embedding_dimension": self.embedding_model.dimension,
-                "config": self.config.copy()
-            }
-            
-            # Добавляем информацию о части, если есть
-            if "part" in chunk:
-                metadata["part"] = chunk["part"]
-                metadata["total_parts"] = len([c for c in self.chunks if c.get("blocks") == chunk.get("blocks")])
-            
-            # Сохраняем промежуточные данные
-            chunk["metadata"] = metadata
-            chunk["final_text"] = text
-        
-        return self
-    
-    def embed(self) -> 'MarkdownProcessor':
-        """Создание эмбеддингов для всех чанков с правильными префиксами"""
-        if not self.chunks:
-            raise ValueError("Нет чанков для создания эмбеддингов")
-        
-        # Собираем все тексты для эмбеддингов (с префиксом passage: для документов)
-        texts = []
-        chunk_indices = []
-        
-        for idx, chunk in enumerate(self.chunks):
-            text = chunk.get("final_text", chunk.get("cleaned_text", chunk["text"])).strip()
-            if text:
-                # E5 модели требуют префикс "passage: " для документов
-                texts.append(f"passage: {text}")
-                chunk_indices.append(idx)
-        
-        if not texts:
-            raise ValueError("Нет текста для создания эмбеддингов")
-        
-        # Создаем эмбеддинги батчами через FastEmbed
-        batch_size = self.config.get("batch_size", 32)
-        all_embeddings = []
-        
-        for i in range(0, len(texts), batch_size):
-            batch_texts = texts[i:i+batch_size]
-            # FastEmbed возвращает генератор
-            batch_embeddings = list(self.embedding_service.embed(batch_texts))
-            all_embeddings.extend(batch_embeddings)
-        
-        # Добавляем эмбеддинги к чанкам
-        for i, chunk_idx in enumerate(chunk_indices):
-            self.chunks[chunk_idx]["vector"] = all_embeddings[i].tolist() if hasattr(all_embeddings[i], 'tolist') else all_embeddings[i]
-        
-        return self
-    
-    def build(self) -> List[TextChunk]:
-        """Сборка финальных TextChunk объектов"""
-        self.final_chunks = []
-        
-        for idx, chunk in enumerate(self.chunks):
-            text = chunk.get("final_text", chunk.get("cleaned_text", chunk["text"]))
-            
-            if not text.strip():
-                continue
-            
-            # Создаем TextChunk
-            self.final_chunks.append(TextChunk(
-                text=text,
-                index=idx,
-                metadata=chunk.get("metadata", {}),
-                vector=chunk.get("vector")
-            ))
-        
-        return self.final_chunks
-    
-    # Основные методы для разных типов ввода
-    def process_file(
-        self, 
-        file_path: str,
-        with_embedding: bool = True
-    ) -> List[TextChunk]:
-        """Обработка файла"""
-        return (self
-            .load_from_file(file_path)
-            .parse()
-            .split()
-            .clean()
-            .enrich()
-            .embed() if with_embedding else self
-            .build())
-    
-    def process_base64(
-        self, 
-        file_base64: Union[str, bytes],
-        with_embedding: bool = True
-    ) -> List[TextChunk]:
-        """Обработка base64 строки"""
-        return (self
-            .load_from_base64(file_base64)
-            .parse()
-            .split()
-            .clean()
-            .enrich()
-            .embed() if with_embedding else self
-            .build())
-    
-    def process_text(
-        self, 
-        text: str,
-        source_name: str = "text_input",
-        with_embedding: bool = True
-    ) -> List[TextChunk]:
-        """Обработка текстовой строки"""
-        return (self
-            .load_from_text(text, source_name)
-            .parse()
-            .split()
-            .clean()
-            .enrich()
-            .embed() if with_embedding else self
-            .build())
-    
-    def process_any(
         self,
-        input_data: Union[str, bytes],
-        input_type: Literal["file", "base64", "text"] = "file",
-        with_embedding: bool = True
+        embedder,
+        *,
+        chunk_size: int = 900,
+        chunk_overlap: int = 120,
+        keep_headings: bool = True,
+        keep_code_blocks: bool = True,
+        passage_prefix: str = "passage: ",
+        batch_size: int = 64,
+        expected_dim: Optional[int] = None,
+    ) -> None:
+        if chunk_size <= 0:
+            raise ValueError("chunk_size должен быть > 0")
+        if chunk_overlap < 0 or chunk_overlap >= chunk_size:
+            raise ValueError("chunk_overlap должен быть >= 0 и < chunk_size")
+        if batch_size <= 0:
+            raise ValueError("batch_size должен быть > 0")
+
+        self._embedder = embedder
+        self._expected_dim = expected_dim
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+        self.keep_headings = keep_headings
+        self.keep_code_blocks = keep_code_blocks
+        self.passage_prefix = passage_prefix
+        self.batch_size = batch_size
+
+    # ---------------------------- Public API ----------------------------
+
+    def build_chunks(
+        self,
+        source: Union[str, os.PathLike[str]],
+        *,
+        source_name: Optional[str] = None,
+        assume_base64_if_looks_like: bool = True,
+        add_passage_prefix: bool = True,
     ) -> List[TextChunk]:
         """
-        Универсальный метод обработки
+        Полный пайплайн: загрузка -> чанки -> эмбеддинги -> List[TextChunk] с vector.
+        """
+        md_text, resolved_name = self._load_markdown(
+            source,
+            source_name=source_name,
+            assume_base64_if_looks_like=assume_base64_if_looks_like,
+        )
+        md_text = self._normalize_newlines(md_text)
+
+        units = self._split_to_units(md_text)
+        texts = self._units_to_chunks(units)
+
+        # Подготовка строк для эмбеддинга (E5: passage/query префиксы)
+        embed_texts: List[str] = []
+        kept_texts: List[str] = []
+        for t in texts:
+            tt = t.strip()
+            if not tt:
+                continue
+            kept_texts.append(tt)
+            embed_texts.append(f"{self.passage_prefix}{tt}" if add_passage_prefix else tt)
+
+        vectors = self._embed(embed_texts)
+
+        chunks: List[TextChunk] = []
+        for i, (plain, vec) in enumerate(zip(kept_texts, vectors)):
+            chunks.append(
+                TextChunk(
+                    text=plain,
+                    index=i,
+                    metadata={
+                        "source": resolved_name,
+                        "embedding_model": getattr(self._embedder, "model_name", type(self._embedder).__name__),
+                        "embedding_dimension": len(vec),
+                        "chunk_size": self.chunk_size,
+                        "chunk_overlap": self.chunk_overlap,
+                        "passage_prefix_added": bool(add_passage_prefix),
+                    },
+                    vector=vec,
+                )
+            )
+        return chunks
+
+    def embed_query(self, query_text: str, *, add_query_prefix: bool = True) -> List[float]:
+        """
+        Утилита для эмбеддинга поискового запроса (E5: "query: ").
+        """
+        q = query_text.strip()
+        if not q:
+            raise ValueError("query_text пустой")
+        text = f"query: {q}" if add_query_prefix else q
+        vecs = self._embed([text])
+        return vecs[0]
+
+    # ---------------------------- Embedding ----------------------------
+
+    def _embed(self, texts: List[str]) -> List[List[float]]:
+        """
+        Считает эмбеддинги батчами через fastembed.
+        """
+        if not texts:
+            return []
+
+        out: List[List[float]] = []
+
+        # fastembed возвращает генератор np.ndarray; конвертируем в list[float]
+        # Используем батчирование на нашей стороне для предсказуемости по памяти.
+        for start in range(0, len(texts), self.batch_size):
+            batch = texts[start : start + self.batch_size]
+            for vec in self._embedder.embed(batch):
+                v = vec.tolist()  # np.ndarray -> list[float]
+                out.append(v)
+
+        # (не обязательно) сверка размерности
+        if out and self._expected_dim and len(out[0]) != self._expected_dim:
+            # Не падаем всегда: в fastembed иногда модель может иметь иную фактическую размерность.
+            # Но для Qdrant полезно явно заметить расхождение.
+            raise ValueError(
+                f"Неожиданная размерность эмбеддинга: {len(out[0])} вместо {self._expected_dim} "
+                f"для модели {getattr(self._embedder, "model_name", type(self._embedder).__name__)}"
+            )
+
+        return out
+
+    # ---------------------------- Loading ----------------------------
+
+    def _load_markdown(
+        self,
+        source: Union[str, os.PathLike[str]],
+        *,
+        source_name: Optional[str],
+        assume_base64_if_looks_like: bool,
+    ) -> tuple[str, str]:
+        if isinstance(source, (Path, os.PathLike)):
+            p = Path(source)
+            return p.read_text(encoding="utf-8"), source_name or str(p)
+
+        if not isinstance(source, str):
+            raise TypeError("source должен быть str или path-like")
+
+        s = source.strip()
+
+        p = Path(s)
+        if p.exists() and p.is_file():
+            return p.read_text(encoding="utf-8"), source_name or str(p)
+
+        if assume_base64_if_looks_like and self._looks_like_base64(s):
+            decoded = self._try_decode_base64(s)
+            if decoded is not None:
+                return decoded, source_name or "base64"
+
+        return source, source_name or "inline"
+
+    def _looks_like_base64(self, s: str) -> bool:
+        if len(s) < 16:
+            return False
+        if not self._BASE64_RE.match(s):
+            return False
+        compact = re.sub(r"\s+", "", s)
+        return len(compact) % 4 == 0
+
+    def _try_decode_base64(self, s: str) -> Optional[str]:
+        try:
+            compact = re.sub(r"\s+", "", s)
+            data = base64.b64decode(compact, validate=True)
+            return data.decode("utf-8")
+        except Exception:
+            return None
+
+    @staticmethod
+    def _normalize_newlines(text: str) -> str:
+        return text.replace("\r\n", "\n").replace("\r", "\n")
+
+    # ---------------------------- Chunking ----------------------------
+
+    @dataclass(frozen=True)
+    class _Unit:
+        kind: str  # "heading" | "para" | "code" | "blank"
+        text: str
+        heading_level: Optional[int] = None
+        heading_text: Optional[str] = None
+
+    def _split_to_units(self, md: str) -> List[_Unit]:
+        lines = md.split("\n")
+        units: List[MarkdownProcessor._Unit] = []
+
+        i = 0
+        in_code = False
+        code_buf: List[str] = []
+        para_buf: List[str] = []
+
+        def flush_para() -> None:
+            nonlocal para_buf
+            if not para_buf:
+                return
+            text = "\n".join(para_buf).strip()
+            if text:
+                units.append(self._Unit(kind="para", text=text))
+            para_buf = []
+
+        while i < len(lines):
+            line = lines[i]
+
+            fence_match = re.match(r"^(\s*)(```+|~~~+)\s*(.*)$", line)
+            if fence_match:
+                if not in_code:
+                    flush_para()
+                    in_code = True
+                    code_buf = [line]
+                else:
+                    code_buf.append(line)
+                    in_code = False
+                    if self.keep_code_blocks:
+                        units.append(self._Unit(kind="code", text="\n".join(code_buf).strip()))
+                    else:
+                        units.append(self._Unit(kind="code", text="[code block omitted]"))
+                    code_buf = []
+                i += 1
+                continue
+
+            if in_code:
+                code_buf.append(line)
+                i += 1
+                continue
+
+            h = re.match(r"^(#{1,6})\s+(.+?)\s*$", line)
+            if h:
+                flush_para()
+                level = len(h.group(1))
+                title = h.group(2).strip()
+                units.append(self._Unit(kind="heading", text=line.strip(), heading_level=level, heading_text=title))
+                i += 1
+                continue
+
+            if line.strip() == "":
+                flush_para()
+                units.append(self._Unit(kind="blank", text=""))
+                i += 1
+                continue
+
+            para_buf.append(line)
+            i += 1
+
+        flush_para()
+
+        if in_code and code_buf:
+            if self.keep_code_blocks:
+                units.append(self._Unit(kind="code", text="\n".join(code_buf).strip()))
+            else:
+                units.append(self._Unit(kind="code", text="[code block omitted]"))
+
+        return units
+
+    def _units_to_chunks(self, units: Sequence[_Unit]) -> List[str]:
+        sections: List[str] = []
+        current_lines: List[str] = []
+        heading_stack: List[str] = []
+
+        def flush_section() -> None:
+            txt = "\n".join(current_lines).strip()
+            if txt:
+                sections.append(txt)
+            current_lines.clear()
+
+        for u in units:
+            if u.kind == "heading":
+                flush_section()
+
+                if not self.keep_headings:
+                    heading_stack = []
+                else:
+                    level = u.heading_level or 1
+                    while len(heading_stack) >= level:
+                        heading_stack.pop()
+                    heading_stack.append(u.heading_text or "")
+
+                if self.keep_headings and heading_stack:
+                    prefix = " > ".join([h for h in heading_stack if h])
+                    if prefix:
+                        current_lines.append(f"# {prefix}")
+                current_lines.append(u.text)
+
+            elif u.kind == "blank":
+                if current_lines and current_lines[-1] != "":
+                    current_lines.append("")
+            else:
+                current_lines.append(u.text)
+
+        flush_section()
+
+        chunks: List[str] = []
+        for sec in sections:
+            chunks.extend(self._split_by_size(sec))
+
+        return [c.strip() for c in chunks if c.strip()]
+
+    def _split_by_size(self, text: str) -> List[str]:
+        if len(text) <= self.chunk_size:
+            return [text]
+
+        blocks = re.split(r"\n{2,}", text)
+        blocks = [b.strip() for b in blocks if b.strip()]
+
+        chunks: List[str] = []
+        buf: List[str] = []
+        buf_len = 0
+
+        def flush_buf() -> None:
+            nonlocal buf, buf_len
+            if not buf:
+                return
+            chunks.append("\n\n".join(buf).strip())
+            buf = []
+            buf_len = 0
+
+        for b in blocks:
+            add_len = len(b) + (2 if buf else 0)
+
+            if buf_len + add_len <= self.chunk_size:
+                buf.append(b)
+                buf_len += add_len
+                continue
+
+            # блок больше chunk_size и буфер пуст
+            if not buf and len(b) > self.chunk_size:
+                chunks.extend(self._hard_split(b))
+                continue
+
+            flush_buf()
+
+            # overlap
+            if self.chunk_overlap > 0 and chunks:
+                ov = self._take_overlap(chunks[-1], self.chunk_overlap)
+                if ov:
+                    buf = [ov]
+                    buf_len = len(ov)
+
+            # добавляем текущий блок
+            if len(b) <= self.chunk_size:
+                if buf and (buf_len + len(b) + 2 > self.chunk_size):
+                    buf = [b]
+                    buf_len = len(b)
+                else:
+                    if buf:
+                        buf_len += 2
+                    buf.append(b)
+                    buf_len += len(b)
+            else:
+                if buf:
+                    flush_buf()
+                chunks.extend(self._hard_split(b))
+
+        flush_buf()
+        return chunks
+
+    def _hard_split(self, text: str) -> List[str]:
+        lines = text.split("\n")
+        chunks: List[str] = []
+        cur: List[str] = []
+        cur_len = 0
+
+        def flush() -> None:
+            nonlocal cur, cur_len
+            if cur:
+                chunks.append("\n".join(cur).strip())
+            cur = []
+            cur_len = 0
+
+        for line in lines:
+            add_len = len(line) + (1 if cur else 0)
+            if cur_len + add_len <= self.chunk_size:
+                if cur:
+                    cur_len += 1
+                cur.append(line)
+                cur_len += len(line)
+            else:
+                flush()
+                if len(line) > self.chunk_size:
+                    chunks.extend(self._split_string_fixed(line, self.chunk_size, self.chunk_overlap))
+                else:
+                    cur = [line]
+                    cur_len = len(line)
+
+        flush()
+        return chunks
+
+    def _take_overlap(self, text: str, overlap: int) -> str:
+        if overlap <= 0:
+            return ""
+        if len(text) <= overlap:
+            return text
+
+        suffix = text[-overlap:]
+        idx = suffix.find("\n")
+        if idx != -1 and idx + 1 < len(suffix):
+            return suffix[idx + 1 :].strip()
+        sp = suffix.find(" ")
+        if sp != -1 and sp + 1 < len(suffix):
+            return suffix[sp + 1 :].strip()
+        return suffix.strip()
+
+    def _split_string_fixed(self, s: str, size: int, overlap: int) -> List[str]:
+        res: List[str] = []
+        step = max(1, size - max(0, overlap))
+        for start in range(0, len(s), step):
+            part = s[start : start + size].strip()
+            if part:
+                res.append(part)
+            if start + size >= len(s):
+                break
+        return res
+        
+
+class FilterBuilder:
+    """Build Qdrant filters from dict conditions."""
+    
+    @staticmethod
+    def build_filter(condition: Dict[str, Any]):
+        """
+        Build Qdrant filter from dict.
         
         Args:
-            input_data: данные для обработки
-            input_type: тип данных ("file", "base64", "text")
-            with_embedding: создавать ли эмбеддинги
+            condition: Filter condition dict
+            
+        Returns:
+            Qdrant Filter object
         """
-        if input_type == "file":
-            return self.process_file(str(input_data), with_embedding)
-        elif input_type == "base64":
-            return self.process_base64(input_data, with_embedding)
-        elif input_type == "text":
-            return self.process_text(str(input_data), with_embedding=with_embedding)
-        else:
-            raise ValueError(f"Unknown input type: {input_type}")
+        conditions = []
+        if "must" in condition:
+            for cond in condition["must"]:
+                if "key" in cond and "match" in cond:
+                    conditions.append(
+                        models.FieldCondition(
+                            key=cond["key"],
+                            match=models.MatchValue(value=cond["match"]["value"])
+                        )
+                    )
+                elif "key" in cond and "range" in cond:
+                    conditions.append(
+                        models.FieldCondition(
+                            key=cond["key"],
+                            range=models.Range(**cond["range"])
+                        )
+                    )
+        
+        return models.Filter(must=conditions) if conditions else None
