@@ -47,14 +47,14 @@ async def main() -> None:
     embedder = TextEmbedding(model_name=EMBEDDING_MODEL_NAME)
 
     # 2) Create processor (embedder is injected)
-    processor = MarkdownProcessor(
-        embedder=embedder,
-        expected_dim=EXPECTED_DIM,
-        chunk_size=900,
-        chunk_overlap=120,
-        batch_size=64,
-        passage_prefix="passage: ",
-    )
+    # processor = MarkdownProcessor(
+    #     embedder=embedder,
+    #     expected_dim=EXPECTED_DIM,
+    #     chunk_size=900,
+    #     chunk_overlap=120,
+    #     batch_size=64,
+    #     passage_prefix="passage: ",
+    # )
 
     # 3) Connect to Qdrant
     client = QdrantAsyncClient(url=QDRANT_URL)
@@ -68,22 +68,22 @@ async def main() -> None:
         )
 
     # 5) Build chunks -> points
-    chunks = processor.build_chunks(
-        MD_FILE,
-        source_name=MD_FILE,
-        add_passage_prefix=ADD_PASSAGE_PREFIX,
-    )
-    points = chunks_to_points(chunks)
+    # chunks = processor.build_chunks(
+    #     MD_FILE,
+    #     source_name=MD_FILE,
+    #     add_passage_prefix=ADD_PASSAGE_PREFIX,
+    # )
+    # points = chunks_to_points(chunks)
 
-    # 6) Upload points
-    point_ids = await client.upload_points(
-        collection_name=COLLECTION_NAME,
-        points=points,
-        batch_size=100,
-        wait=True,
-    )
+    # # 6) Upload points
+    # point_ids = await client.upload_points(
+    #     collection_name=COLLECTION_NAME,
+    #     points=points,
+    #     batch_size=100,
+    #     wait=True,
+    # )
 
-    print(f"Uploaded points: {len(point_ids)}")
+    # print(f"Uploaded points: {len(point_ids)}")
 
     # 7) Collection info
     info = await client.get_collection_info(collection_name=COLLECTION_NAME)

@@ -346,9 +346,9 @@ class QdrantAsyncClient:
 
         try:
             search_filter = FilterBuilder.build_filter(filter_condition) if filter_condition else None
-            hits = await self.client.search(
+            hits = await self.client.query_points(
                 collection_name=collection_name,
-                query_vector=query_vector,
+                query=query_vector,
                 limit=limit,
                 query_filter=search_filter,
                 score_threshold=score_threshold,
@@ -357,6 +357,9 @@ class QdrantAsyncClient:
             )
             results: List[SearchResult] = []
             for hit in hits:
+                print(hit)
+                print()
+                print()
                 payload = hit.payload or {}
                 results.append(
                     SearchResult(
