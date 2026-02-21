@@ -356,10 +356,7 @@ class QdrantAsyncClient:
                 with_vectors=with_vectors
             )
             results: List[SearchResult] = []
-            for hit in hits:
-                print(hit)
-                print()
-                print()
+            for hit in hits.points:
                 payload = hit.payload or {}
                 results.append(
                     SearchResult(

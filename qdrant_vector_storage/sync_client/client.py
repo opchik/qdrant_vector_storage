@@ -346,7 +346,7 @@ class QdrantSyncClient:
                 with_vectors=with_vectors,
             )
             results: List[SearchResult] = []
-            for hit in hits:
+            for hit in hits.points:
                 payload = hit.payload or {}
                 results.append(
                     SearchResult(

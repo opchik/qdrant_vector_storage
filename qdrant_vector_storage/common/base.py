@@ -2,6 +2,7 @@ import os
 import re
 import base64
 from pathlib import Path
+from datetime import datetime
 from dataclasses import dataclass
 from qdrant_client.http import models
 from typing import Any, Dict, List, Optional, Sequence, Union
@@ -104,6 +105,7 @@ class MarkdownProcessor:
                         "chunk_size": self.chunk_size,
                         "chunk_overlap": self.chunk_overlap,
                         "passage_prefix_added": bool(add_passage_prefix),
+                        "created_at": datetime.now()
                     },
                     vector=vec,
                 )
