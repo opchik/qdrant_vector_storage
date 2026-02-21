@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qdrant_vector_storage"
+version = "0.1.1"
+description = "Sync/async Qdrant clients with Markdown chunking and pluggable embedding pipeline."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [{name = "Nikita"}]
+keywords = ["qdrant", "vector", "embeddings", "rag", "markdown"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+
+
+dependencies = [
+  "qdrant-client>=1.9.0",
+  "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+fastembed = ["fastembed>=0.4.0"]
+fastembed-gpu = ["fastembed-gpu>=0.4.0"]
+dev = ["pytest>=7.4", "ruff>=0.5.0", "mypy>=1.7", "build>=1.0.0", "twine>=5.0.0"]
+
+[project.urls]
+Homepage = "https://github.com/opchik/qdrant_vector_storage"
+Repository = "https://github.com/opchik/qdrant_vector_storage"
+Issues = "https://github.com/opchik/qdrant_vector_storage/issues"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+exclude = ["tests*", "examples*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+

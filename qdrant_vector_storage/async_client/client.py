@@ -13,6 +13,7 @@ from qdrant_client.http import models
 from qdrant_client.http.exceptions import UnexpectedResponse
 
 from ..common.base import MarkdownProcessor, FilterBuilder
+from ..common.converters import chunks_to_points
 from ..common.models import Point, SearchResult, FileUploadResult, FileType, Distance
 from ..common.exceptions import (
     QdrantError, CollectionNotFoundError, CollectionExistsError,
@@ -227,29 +228,10 @@ class QdrantAsyncClient:
             base_meta: Dict[str, Any] = dict(metadata or {})
             if source_name:
                 base_meta.setdefault("source", source_name)
-
-            points: List[Point] = []
-            for ch in chunks:
-                if getattr(ch, "vector", None) is None:
-                    raise EmbeddingError(f"Chunk {getattr(ch, 'index', None)} has no vector")
-                if not getattr(ch, "text", ""):
-                    continue
-
-                chunk_meta = {}
-                chunk_meta.update(base_meta)
-                # metadata из процессора (например, embedding_model, chunk_size...)
-                chunk_meta.update(getattr(ch, "metadata", {}) or {})
-                # индекс чанка — отдельно, чтобы удобно фильтровать
-                chunk_meta["chunk_index"] = int(getattr(ch, "index", 0))
-                chunk_meta["created_at"] = datetime.now()
-                points.append(
-                    Point(
-                        id=str(uuid.uuid4()),
-                        text=ch.text,
-                        metadata=chunk_meta,
-                        vector=ch.vector,
-                    )
-                )
+            try:
+                points = chunks_to_points(chunks, base_metadata=base_meta)
+            except Exception as e:
+                raise EmbeddingError(f"Failed to build points from chunks: {e}") from e
             point_ids = await self.upload_points(
                 collection_name=collection_name,
                 points=points,

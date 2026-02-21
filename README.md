@@ -1,158 +1,214 @@
-# Qdrant Vector Storage
+# qdrant_vector_storage
 
-Sync and async Python client for Qdrant vector database with built-in support for uploading MD files.
+Библиотека предоставляет **синхронный и асинхронный** клиент для Qdrant, а также готовый пайплайн:
+**Markdown → чанки → эмбеддинги → загрузка в Qdrant**.
 
+Ключевая идея: библиотека **не навязывает** конкретную модель эмбеддингов.  
+Вы передаёте объект `embedder` (например, `fastembed.TextEmbedding`), а `MarkdownProcessor` использует его для расчёта векторов.
 
-## Функции
-
-- **Синхронный и асинхронный режимы** — Выберите подходящую модель программирования
-- **Поддержка загрузки файлов** — Загружайте MD файлы
-- **Векторный поиск** — Поиск по тексту или вектору
-- **Гибкое удаление** — Удаление по ID или метаданным
-- **Управление коллекциями** — Создание, просмотр и удаление коллекций
-- **Пакетные операции** — Эффективная пакетная обработка
-- **Подсказки типов** — Полная типобезопасность с моделями Pydantic
+---
 
 ## Установка
+
+Базовая установка (клиенты + модели данных):
 
 ```bash
 pip install qdrant_vector_storage
 ```
 
-## 📚 Классы и методы
+С fastembed (рекомендуется для локальных эмбеддингов):
 
-### `QdrantSyncClient` / `QdrantAsyncClient`
+```bash
+pip install "qdrant_vector_storage[fastembed]"
+```
 
-**Параметры инициализации:**
+Опционально fastembed-gpu:
 
-| Параметр | Тип | По умолчанию | Описание |
-|----------|-----|--------------|----------|
-| `url` | `Optional[str]` | `None` | Полный URL Qdrant (например, http://localhost:6333) |
-| `api_key` | `Optional[str]` | `None` | API-ключ для аутентификации |
-| `host` | `Optional[str]` | `None` | Хост Qdrant сервера |
-| `port` | `int` | `6333` | Порт Qdrant сервера |
-| `timeout` | `int` | `60` | Таймаут запросов (сек) |
-| `prefer_grpc` | `bool` | `False` | Предпочитать gRPC протокол |
-
-**Методы:**
-
-#### Collection Management
-
-| Метод | Параметры | Возвращает | Описание |
-|-------|-----------|------------|----------|
-| `create_collection()` | `name: str`, `vector_size: int`, `distance: Union[str, Distance] = "COSINE"`, `on_disk_payload: bool = True`, `**kwargs` | `Dict[str, Any]` | Создает новую коллекцию |
-| `list_collections()` | `-` | `List[str]` | Список всех коллекций |
-| `get_collection_info()` | `name: str` | `Dict[str, Any]` | Информация о коллекции |
-| `delete_collection()` | `name: str` | `bool` | Удаляет коллекцию |
-
-#### File Upload
-
-| Метод | Параметры | Возвращает | Описание |
-|-------|-----------|------------|----------|
-| `upload_file()` | `collection_name: str`, `file_path: str`, `embedder: Callable`, `chunk_size: int = 1000`, `chunk_overlap: int = 200`, `metadata: Optional[Dict] = None`, `batch_size: int = 100` | `FileUploadResult` | Загружает файл в коллекцию |
-| `upload_documents()` | `collection_name: str`, `documents: List[Document]`, `batch_size: int = 100`, `wait: bool = True` | `List[str]` (ID документов) | Загружает документы в коллекцию |
-
-#### Document Deletion
-
-| Метод | Параметры | Возвращает | Описание |
-|-------|-----------|------------|----------|
-| `delete_documents()` | `collection_name: str`, `document_ids: Optional[List[str]] = None`, `filter_condition: Optional[Dict] = None`, `wait: bool = True` | `int` (количество удаленных) | Удаляет документы из коллекции |
-| `delete_by_metadata()` | `collection_name: str`, `metadata_key: str`, `metadata_value: Any`, `wait: bool = True` | `int` (количество удаленных) | Удаляет документы по метаданным |
-
-#### Search
-
-| Метод | Параметры | Возвращает | Описание |
-|-------|-----------|------------|----------|
-| `search()` | `collection_name: str`, `query_vector: List[float]`, `limit: int = 10`, `score_threshold: Optional[float] = None`, `filter_condition: Optional[Dict] = None`, `with_payload: bool = True`, `with_vectors: bool = False` | `List[SearchResult]` | Поиск по вектору запроса |
-| `search_by_text()` | `collection_name: str`, `query_text: str`, `embedder: Callable`, `limit: int = 10`, `**kwargs` | `List[SearchResult]` | Поиск по тексту запроса |
-
-#### Utilities
-
-| Метод | Параметры | Возвращает | Описание |
-|-------|-----------|------------|----------|
-| `count_documents()` | `collection_name: str`, `filter_condition: Optional[Dict] = None` | `int` | Количество документов в коллекции |
-| `healthcheck()` | `-` | `bool` | Проверка доступности Qdrant |
-| `close()` | `-` | `None` | Закрывает соединение |
+```bash
+pip install "qdrant_vector_storage[fastembed-gpu]"
+```
 
 ---
 
-### Модели данных
+## Быстрый старт
 
-#### `CollectionConfig`
+### 1) Создайте embedder (пример: fastembed)
 
-| Поле | Тип | По умолчанию | Описание |
-|------|-----|--------------|----------|
-| `name` | `str` | **обязательный** | Имя коллекции |
-| `vector_size` | `int` | **обязательный** | Размерность векторов |
-| `distance` | `Distance` | `Distance.COSINE` | Метрика расстояния |
-| `on_disk_payload` | `bool` | `True` | Хранить payload на диске |
+```python
+from fastembed import TextEmbedding
 
-#### `Document`
+embedder = TextEmbedding(model_name="jinaai/jina-embeddings-v3")
+```
 
-| Поле | Тип | По умолчанию | Описание |
-|------|-----|--------------|----------|
-| `id` | `Optional[str]` | `None` | ID документа |
-| `text` | `str` | **обязательный** | Текст документа |
-| `metadata` | `Dict[str, Any]` | `{}` | Метаданные документа |
-| `vector` | `Optional[List[float]]` | `None` | Вектор документа |
+### 2) Создайте MarkdownProcessor
 
-#### `SearchResult`
+```python
+from qdrant_vector_storage import MarkdownProcessor
 
-| Поле | Тип | Описание |
-|------|-----|----------|
-| `id` | `str` | ID документа |
-| `score` | `float` | Оценка схожести (0-1) |
-| `text` | `str` | Текст документа |
-| `metadata` | `Dict[str, Any]` | Метаданные документа |
+processor = MarkdownProcessor(
+    embedder=embedder,
+    expected_dim=1024,
+    chunk_size=2000,
+    chunk_overlap=200,
+)
+```
 
-#### `FileUploadResult`
+### 3) Асинхронная загрузка Markdown
 
-| Поле | Тип | Описание |
-|------|-----|----------|
-| `file_name` | `str` | Имя загруженного файла |
-| `file_type` | `FileType` | Тип файла |
-| `chunks_uploaded` | `int` | Количество загруженных чанков |
-| `document_ids` | `List[str]` | ID загруженных документов |
-| `collection_name` | `str` | Имя коллекции |
-| `timestamp` | `datetime` | Время загрузки |
+```python
+import asyncio
+from qdrant_vector_storage import QdrantAsyncClient, Distance
+
+async def main():
+    async with QdrantAsyncClient(url="http://localhost:6333") as client:
+        await client.create_collection(
+            collection_name="docs",
+            vector_size=1024,
+            distance=Distance.COSINE,
+        )
+
+        result = await client.upload_markdown(
+            collection_name="docs",
+            md_input="README.md",      # путь, строка Markdown или base64(Markdown)
+            processor=processor,
+            processor_kwargs={"add_passage_prefix": False},
+        )
+
+        print(result)
+
+asyncio.run(main())
+```
+
+### 4) Синхронная загрузка Markdown
+
+```python
+from qdrant_vector_storage import QdrantSyncClient, Distance
+
+with QdrantSyncClient(url="http://localhost:6333") as client:
+    client.create_collection(
+        collection_name="docs",
+        vector_size=1024,
+        distance=Distance.COSINE,
+    )
+
+    result = client.upload_markdown(
+        collection_name="docs",
+        md_input="README.md",
+        processor=processor,
+        processor_kwargs={"add_passage_prefix": False},
+    )
+
+    print(result)
+```
 
 ---
 
-### Поддерживаемые форматы файлов
+## Поддерживаемые форматы входа для MarkdownProcessor
 
-| Формат | Расширения | Описание |
-|--------|------------|----------|
-| Markdown | `.md` | Очистка текста с удалением блоков кода |
-| JSON | `.json` | Pretty-printed JSON контент |
-| HTML | `.html`, `.htm` | Извлечение текста с удалением script/style |
-| LaTeX | `.tex`, `.latex` | Удаление комментариев и команд |
+`MarkdownProcessor.build_chunks(...)` принимает:
+
+- строку Markdown
+- строку `base64(Markdown)` (авто-распознавание)
+- путь к файлу `.md`
 
 ---
 
-### Примеры конфигурации подключения
+## Требования к embedder
 
-**По URL:**
-```python
-client = QdrantSyncClient(
-    url="http://localhost:6333", 
-    api_key="your-key"
-)
-```
+`MarkdownProcessor` ожидает объект, у которого есть метод:
 
-**По host/port:**
-```python
-client = QdrantSyncClient(
-    host="localhost", 
-    port=6333, 
-    timeout=30
-)
-```
+- `embed(texts: List[str]) -> Iterable[np.ndarray]`
 
-**С gRPC:**
-```python
-client = QdrantSyncClient(
-    url="http://localhost:6333", 
-    prefer_grpc=True
-)
-```
+Именно так работает `fastembed.TextEmbedding`.
 
+---
+
+# Документация API
+
+Ниже перечислены все публичные классы и методы.
+
+## 1) MarkdownProcessor
+
+`MarkdownProcessor` выполняет:
+- загрузку Markdown (строка / base64 / путь)
+- нормализацию
+- разбиение на чанки
+- расчёт эмбеддингов через переданный `embedder`
+
+### Методы MarkdownProcessor
+
+| Метод | Входные параметры | Выход | Назначение |
+|---|---|---|---|
+| `MarkdownProcessor(embedder, chunk_size=900, chunk_overlap=120, keep_headings=True, keep_code_blocks=True, passage_prefix="passage: ", batch_size=64, expected_dim=None)` | `embedder`: объект с `.embed(List[str])`; параметры чанкинга/батчинга | `MarkdownProcessor` | Создание процессора Markdown |
+| `build_chunks(source, source_name=None, assume_base64_if_looks_like=True, add_passage_prefix=True)` | `source`: `str` или `PathLike` | `List[TextChunk]` (вектор заполнен) | Полный пайплайн: загрузка → чанки → эмбеддинги |
+| `embed_query(query_text, add_query_prefix=True)` | `query_text: str` | `List[float]` | Эмбеддинг запроса (для E5-подобных моделей можно добавлять префикс `query:`) |
+
+---
+
+## 2) QdrantSyncClient
+
+Синхронный клиент для Qdrant.
+
+### Методы QdrantSyncClient
+
+| Метод | Входные параметры | Выход | Возможные исключения |
+|---|---|---|---|
+| `QdrantSyncClient(url, api_key=None, timeout=60, **kwargs)` | `url: str`, `api_key: Optional[str]` | объект клиента | `ConnectionError` |
+| `create_collection(collection_name, vector_size, distance=Distance.COSINE, on_disk_payload=True, **kwargs)` | `collection_name: str`, `vector_size: int` | `Dict[str, Any]` | `CollectionExistsError`, `QdrantError` |
+| `get_collection_info(collection_name)` | `collection_name: str` | `Dict[str, Any]` | `CollectionNotFoundError`, `QdrantError` |
+| `list_collections()` | — | `List[str]` | `QdrantError` |
+| `delete_collection(collection_name)` | `collection_name: str` | `bool` | — |
+| `upload_points(collection_name, points, batch_size=100, wait=True)` | `points: List[Point]` | `List[str]` (IDs) | `CollectionNotFoundError`, `QdrantError` |
+| `upload_markdown(collection_name, md_input, processor, source_name=None, metadata=None, batch_size=100, wait=True, processor_kwargs=None)` | `md_input: str | PathLike`, `processor: MarkdownProcessor` | `FileUploadResult` | `CollectionNotFoundError`, `FileProcessingError`, `EmbeddingError`, `QdrantError` |
+| `delete_points(collection_name, point_ids=None, filter_condition=None, wait=True)` | ids или filter | `int` (удалено, если доступно) | `CollectionNotFoundError`, `QdrantError` |
+| `delete_by_metadata(collection_name, metadata_key, metadata_value, wait=True)` | ключ/значение | `int` | `CollectionNotFoundError`, `QdrantError` |
+| `search(collection_name, query_vector, limit=10, score_threshold=None, filter_condition=None, with_payload=True, with_vectors=False)` | `query_vector: List[float]` | `List[SearchResult]` | `CollectionNotFoundError`, `QdrantError` |
+| `count_points(collection_name, filter_condition=None, exact=False)` | фильтр | `int` | `CollectionNotFoundError`, `QdrantError` |
+| `healthcheck()` | — | `bool` | — |
+| `close()` | — | `None` | — |
+
+---
+
+## 3) QdrantAsyncClient
+
+Асинхронный клиент для Qdrant.
+
+### Методы QdrantAsyncClient
+
+| Метод | Входные параметры | Выход | Возможные исключения |
+|---|---|---|---|
+| `QdrantAsyncClient(url, api_key=None, timeout=60, **kwargs)` | `url: str`, `api_key: Optional[str]` | объект клиента | `ConnectionError` |
+| `create_collection(collection_name, vector_size, distance=Distance.COSINE, on_disk_payload=True, **kwargs)` | `collection_name: str`, `vector_size: int` | `Dict[str, Any]` | `CollectionExistsError`, `QdrantError` |
+| `get_collection_info(collection_name)` | `collection_name: str` | `Dict[str, Any]` | `CollectionNotFoundError`, `QdrantError` |
+| `list_collections()` | — | `List[str]` | `QdrantError` |
+| `delete_collection(collection_name)` | `collection_name: str` | `bool` | — |
+| `upload_points(collection_name, points, batch_size=100, wait=True)` | `points: List[Point]` | `List[str]` (IDs) | `CollectionNotFoundError`, `QdrantError` |
+| `upload_markdown(collection_name, md_input, processor, source_name=None, metadata=None, batch_size=100, wait=True, processor_kwargs=None)` | `md_input: str | PathLike`, `processor: MarkdownProcessor` | `FileUploadResult` | `CollectionNotFoundError`, `FileProcessingError`, `EmbeddingError`, `QdrantError` |
+| `delete_points(collection_name, point_ids=None, filter_condition=None, wait=True)` | ids или filter | `int` (удалено, если доступно) | `CollectionNotFoundError`, `QdrantError` |
+| `delete_by_metadata(collection_name, metadata_key, metadata_value, wait=True)` | ключ/значение | `int` | `CollectionNotFoundError`, `QdrantError` |
+| `search(collection_name, query_vector, limit=10, score_threshold=None, filter_condition=None, with_payload=True, with_vectors=False)` | `query_vector: List[float]` | `List[SearchResult]` | `CollectionNotFoundError`, `QdrantError` |
+| `count_points(collection_name, filter_condition=None, exact=False)` | фильтр | `int` | `CollectionNotFoundError`, `QdrantError` |
+| `healthcheck()` | — | `bool` | — |
+| `close()` | — | `None` | — |
+
+---
+
+## 4) Утилиты
+
+### FilterBuilder
+
+| Метод | Входные параметры | Выход | Назначение |
+|---|---|---|---|
+| `FilterBuilder.build_filter(condition)` | `condition: Dict[str, Any]` | `models.Filter | None` | Сборка Qdrant-фильтра из словаря |
+
+### Конвертеры
+
+| Функция | Входные параметры | Выход | Назначение |
+|---|---|---|---|
+| `chunks_to_points(chunks, base_metadata=None, id_factory=None)` | `List[TextChunk]` | `List[Point]` | Преобразование чанков в точки для upsert |
+
+---
+
+## Лицензия
+
+MIT (см. файл `LICENSE`).

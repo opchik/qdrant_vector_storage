@@ -1,16 +1,19 @@
-"""
-Qdrant File Uploader - Sync and Async client for Qdrant vector database with file upload support.
+"""qdrant_vector_storage package.
+
+Sync and async clients for Qdrant with Markdown chunking utilities.
 """
 
 from .sync_client.client import QdrantSyncClient
 from .async_client.client import QdrantAsyncClient
+
+from .common.base import MarkdownProcessor, FilterBuilder
 from .common.models import (
+    Point,
     SearchResult,
     FileUploadResult,
     FileType,
     Distance,
     TextChunk,
-    EmbeddingModel
 )
 from .common.exceptions import (
     QdrantError,
@@ -19,24 +22,22 @@ from .common.exceptions import (
     FileProcessingError,
     UnsupportedFileTypeError,
     EmbeddingError,
-    ConnectionError
+    ConnectionError,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "QdrantSyncClient",
     "QdrantAsyncClient",
-    
-    "CollectionConfig",
-    "Document",
+    "MarkdownProcessor",
+    "FilterBuilder",
+    "Point",
     "SearchResult",
     "FileUploadResult",
     "FileType",
     "Distance",
     "TextChunk",
-    "EmbeddingModel",
-    
     "QdrantError",
     "CollectionNotFoundError",
     "CollectionExistsError",
