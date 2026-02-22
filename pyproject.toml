@@ -40,10 +40,7 @@ Issues = "https://github.com/opchik/qdrant_vector_storage/issues"
 
 [tool.setuptools]
 include-package-data = true
-
-[tool.setuptools]
-include-package-data = true
-packages = {find = {where = ["."], exclude = ["tests*", "examples*"]}} 
+packages = {find = {where = ["."], exclude = ["tests*", "examples*"]}}
 
 [tool.ruff]
 line-length = 100
