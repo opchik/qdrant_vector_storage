@@ -8,7 +8,8 @@ version = "0.1.1"
 description = "Sync/async Qdrant clients with Markdown chunking and pluggable embedding pipeline."
 readme = "README.md"
 requires-python = ">=3.9"
-license = {file = "LICENSE"}
+license = "MIT"
+license-files = ["LICEN[CS]E*"]
 authors = [{name = "Nikita"}]
 keywords = ["qdrant", "vector", "embeddings", "rag", "markdown"]
 classifiers = [
@@ -20,7 +21,6 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
-  "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
   "Topic :: Database",
   "Topic :: Software Development :: Libraries :: Python Modules",
