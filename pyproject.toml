@@ -12,7 +12,6 @@ license = {file = "LICENSE"}
 authors = [{name = "Nikita"}]
 keywords = ["qdrant", "vector", "embeddings", "rag", "markdown"]
 classifiers = [
-  classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
   "Programming Language :: Python :: 3.9",
@@ -23,6 +22,8 @@ classifiers = [
   "Programming Language :: Python :: 3.14",
   "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
+  "Topic :: Database",
+  "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 
 
