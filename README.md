@@ -16,18 +16,6 @@
 pip install qdrant_vector_storage
 ```
 
-С fastembed (рекомендуется для локальных эмбеддингов):
-
-```bash
-pip install "qdrant_vector_storage[fastembed]"
-```
-
-Опционально fastembed-gpu:
-
-```bash
-pip install "qdrant_vector_storage[fastembed-gpu]"
-```
-
 ---
 
 ## Быстрый старт
@@ -145,55 +133,28 @@ with QdrantSyncClient(url="http://localhost:6333") as client:
 
 ---
 
-## 2) QdrantSyncClient
+## 2) QdrantSyncClient / 3) QdrantAsyncClient
 
-Синхронный клиент для Qdrant.
+Синхронный и асинхронный клиенты для Qdrant с идентичным набором методов. Различаются только синтаксисом вызова: синхронные методы vs `async/await`.
 
-### Методы QdrantSyncClient
+| Метод | Входные параметры | Выход | Возможные исключения | Описание |
+|-------|-------------------|-------|----------------------|----------|
+| `QdrantSyncClient(url, api_key=None, timeout=60, **kwargs)`<br>`QdrantAsyncClient(url, api_key=None, timeout=60, **kwargs)` | `url: str` – адрес Qdrant<br>`api_key: Optional[str]` – ключ API (опционально)<br>`timeout: int` – таймаут запросов (по умолч. 60)<br>`**kwargs` – доп. параметры клиента | объект клиента | `ConnectionError` | Инициализация подключения к Qdrant |
+| `create_collection(collection_name, vector_size, distance=Distance.COSINE, on_disk_payload=True, **kwargs)` | `collection_name: str` – имя коллекции<br>`vector_size: int` – размерность векторов<br>`distance: Distance` – метрика расстояния (по умолч. COSINE)<br>`on_disk_payload: bool` – хранить payload на диске (по умолч. True)<br>`**kwargs` – доп. параметры создания | `Dict[str, Any]` – информация о созданной коллекции | `CollectionExistsError`<br>`QdrantError` | Создание новой коллекции |
+| `get_collection_info(collection_name)` | `collection_name: str` – имя коллекции | `Dict[str, Any]` – информация о коллекции | `CollectionNotFoundError`<br>`QdrantError` | Получение информации о коллекции |
+| `list_collections()` | – | `List[str]` – список имен коллекций | `QdrantError` | Получение списка всех коллекций |
+| `delete_collection(collection_name)` | `collection_name: str` – имя коллекции | `bool` – успех операции | – | Удаление коллекции |
+| `upload_points(collection_name, points, batch_size=100, wait=True)` | `collection_name: str` – имя коллекции<br>`points: List[Point]` – точки для загрузки<br>`batch_size: int` – размер батча (по умолч. 100)<br>`wait: bool` – ждать завершения (по умолч. True) | `List[str]` – ID загруженных точек | `CollectionNotFoundError`<br>`QdrantError` | Загрузка точек в коллекцию |
+| `upload_markdown(collection_name, md_input, processor, source_name=None, metadata=None, batch_size=100, wait=True, processor_kwargs=None)` | `collection_name: str` – имя коллекции<br>`md_input: str | PathLike` – Markdown (текст/base64/путь)<br>`processor: MarkdownProcessor` – процессор для чанков<br>`source_name: Optional[str]` – имя источника<br>`metadata: Optional[Dict]` – метаданные<br>`batch_size: int` – размер батча (по умолч. 100)<br>`wait: bool` – ждать завершения (по умолч. True)<br>`processor_kwargs: Optional[Dict]` – параметры процессора | `FileUploadResult` – результат загрузки | `CollectionNotFoundError`<br>`FileProcessingError`<br>`EmbeddingError`<br>`QdrantError` | Загрузка Markdown с автоматической векторизацией |
+| `delete_points(collection_name, point_ids=None, filter_condition=None, wait=True)` | `collection_name: str` – имя коллекции<br>`point_ids: Optional[List[str]]` – ID точек<br>`filter_condition: Optional[Dict]` – фильтр для удаления<br>`wait: bool` – ждать завершения (по умолч. True) | `int` – количество удаленных точек | `CollectionNotFoundError`<br>`QdrantError` | Удаление точек по ID или фильтру |
+| `delete_by_metadata(collection_name, metadata_key, metadata_value, wait=True)` | `collection_name: str` – имя коллекции<br>`metadata_key: str` – ключ в metadata<br>`metadata_value: Any` – значение<br>`wait: bool` – ждать завершения (по умолч. True) | `int` – количество удаленных точек | `CollectionNotFoundError`<br>`QdrantError` | Удаление точек по значению в metadata (упрощенный вариант `delete_points`) |
+| `search(collection_name, query_vector, limit=10, score_threshold=None, filter_condition=None, with_payload=True, with_vectors=False)` | `collection_name: str` – имя коллекции<br>`query_vector: List[float]` – вектор запроса<br>`limit: int` – лимит результатов (по умолч. 10)<br>`score_threshold: Optional[float]` – порог схожести<br>`filter_condition: Optional[Dict]` – фильтр<br>`with_payload: bool` – загружать payload (по умолч. True)<br>`with_vectors: bool` – загружать векторы (по умолч. False) | `List[SearchResult]` – результаты поиска | `CollectionNotFoundError`<br>`QdrantError` | Поиск похожих векторов |
+| `count_points(collection_name, filter_condition=None, exact=False)` | `collection_name: str` – имя коллекции<br>`filter_condition: Optional[Dict]` – фильтр<br>`exact: bool` – точный подсчет (по умолч. False) | `int` – количество точек | `CollectionNotFoundError`<br>`QdrantError` | Подсчет точек в коллекции |
+| `healthcheck()` | – | `bool` – доступен ли Qdrant | – | Проверка подключения к Qdrant |
+| `close()` | – | `None` | – | Закрытие соединения |
 
-| Метод | Входные параметры | Выход | Возможные исключения |
-|---|---|---|---|
-| `QdrantSyncClient(url, api_key=None, timeout=60, **kwargs)` | `url: str`, `api_key: Optional[str]` | объект клиента | `ConnectionError` |
-| `create_collection(collection_name, vector_size, distance=Distance.COSINE, on_disk_payload=True, **kwargs)` | `collection_name: str`, `vector_size: int` | `Dict[str, Any]` | `CollectionExistsError`, `QdrantError` |
-| `get_collection_info(collection_name)` | `collection_name: str` | `Dict[str, Any]` | `CollectionNotFoundError`, `QdrantError` |
-| `list_collections()` | — | `List[str]` | `QdrantError` |
-| `delete_collection(collection_name)` | `collection_name: str` | `bool` | — |
-| `upload_points(collection_name, points, batch_size=100, wait=True)` | `points: List[Point]` | `List[str]` (IDs) | `CollectionNotFoundError`, `QdrantError` |
-| `upload_markdown(collection_name, md_input, processor, source_name=None, metadata=None, batch_size=100, wait=True, processor_kwargs=None)` | `md_input: str | PathLike`, `processor: MarkdownProcessor` | `FileUploadResult` | `CollectionNotFoundError`, `FileProcessingError`, `EmbeddingError`, `QdrantError` |
-| `delete_points(collection_name, point_ids=None, filter_condition=None, wait=True)` | ids или filter | `int` (удалено, если доступно) | `CollectionNotFoundError`, `QdrantError` |
-| `delete_by_metadata(collection_name, metadata_key, metadata_value, wait=True)` | ключ/значение | `int` | `CollectionNotFoundError`, `QdrantError` |
-| `search(collection_name, query_vector, limit=10, score_threshold=None, filter_condition=None, with_payload=True, with_vectors=False)` | `query_vector: List[float]` | `List[SearchResult]` | `CollectionNotFoundError`, `QdrantError` |
-| `count_points(collection_name, filter_condition=None, exact=False)` | фильтр | `int` | `CollectionNotFoundError`, `QdrantError` |
-| `healthcheck()` | — | `bool` | — |
-| `close()` | — | `None` | — |
 
----
-
-## 3) QdrantAsyncClient
-
-Асинхронный клиент для Qdrant.
-
-### Методы QdrantAsyncClient
-
-| Метод | Входные параметры | Выход | Возможные исключения |
-|---|---|---|---|
-| `QdrantAsyncClient(url, api_key=None, timeout=60, **kwargs)` | `url: str`, `api_key: Optional[str]` | объект клиента | `ConnectionError` |
-| `create_collection(collection_name, vector_size, distance=Distance.COSINE, on_disk_payload=True, **kwargs)` | `collection_name: str`, `vector_size: int` | `Dict[str, Any]` | `CollectionExistsError`, `QdrantError` |
-| `get_collection_info(collection_name)` | `collection_name: str` | `Dict[str, Any]` | `CollectionNotFoundError`, `QdrantError` |
-| `list_collections()` | — | `List[str]` | `QdrantError` |
-| `delete_collection(collection_name)` | `collection_name: str` | `bool` | — |
-| `upload_points(collection_name, points, batch_size=100, wait=True)` | `points: List[Point]` | `List[str]` (IDs) | `CollectionNotFoundError`, `QdrantError` |
-| `upload_markdown(collection_name, md_input, processor, source_name=None, metadata=None, batch_size=100, wait=True, processor_kwargs=None)` | `md_input: str | PathLike`, `processor: MarkdownProcessor` | `FileUploadResult` | `CollectionNotFoundError`, `FileProcessingError`, `EmbeddingError`, `QdrantError` |
-| `delete_points(collection_name, point_ids=None, filter_condition=None, wait=True)` | ids или filter | `int` (удалено, если доступно) | `CollectionNotFoundError`, `QdrantError` |
-| `delete_by_metadata(collection_name, metadata_key, metadata_value, wait=True)` | ключ/значение | `int` | `CollectionNotFoundError`, `QdrantError` |
-| `search(collection_name, query_vector, limit=10, score_threshold=None, filter_condition=None, with_payload=True, with_vectors=False)` | `query_vector: List[float]` | `List[SearchResult]` | `CollectionNotFoundError`, `QdrantError` |
-| `count_points(collection_name, filter_condition=None, exact=False)` | фильтр | `int` | `CollectionNotFoundError`, `QdrantError` |
-| `healthcheck()` | — | `bool` | — |
-| `close()` | — | `None` | — |
-
----
-
-## 4) Утилиты
+## 3) Утилиты
 
 ### FilterBuilder
 

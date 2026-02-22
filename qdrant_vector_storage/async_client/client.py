@@ -169,8 +169,6 @@ class QdrantAsyncClient:
             logger.error("Failed to upload points: %s", e, exc_info=True)
             raise QdrantError(f"Point upload failed: {e}") from e
 
-    # ==================== Markdown Upload (text / base64 / path) ====================
-
     async def upload_markdown(
         self,
         collection_name: str,
@@ -262,10 +260,13 @@ class QdrantAsyncClient:
         filter_condition: Optional[Dict[str, Any]] = None,
         wait: bool = True
     ) -> int:
+        """Delete points from collection by ids or by filter."""
+        if not collection_name:
+            raise ValueError("collection_name cannot be empty")
         if not await self.client.collection_exists(collection_name):
             raise CollectionNotFoundError(f"Collection '{collection_name}' not found")
-
         try:
+            init_count = await self.count_points(collection_name=collection_name)
             if point_ids:
                 result = await self.client.delete(
                     collection_name=collection_name,
@@ -274,55 +275,22 @@ class QdrantAsyncClient:
                 )
             elif filter_condition:
                 qdrant_filter = FilterBuilder.build_filter(filter_condition)
-                result = await self.client.delete(
-                    collection_name=collection_name,
-                    points_selector=models.FilterSelector(filter=qdrant_filter),
-                    wait=wait
-                )
+                if qdrant_filter is not None:
+                    result = await self.client.delete(
+                        collection_name=collection_name,
+                        points_selector=models.FilterSelector(filter=qdrant_filter),
+                        wait=wait
+                    )
             else:
                 raise ValueError("Either point_ids or filter_condition required")
-
-            if hasattr(result, "status") and hasattr(result.status, "deleted"):
-                return result.status.deleted
-            if hasattr(result, "result") and isinstance(result.result, dict):
-                return int(result.result.get("deleted", 0))
+            if hasattr(result, 'status') and result.status == 'completed':
+                return init_count - await self.count_points(collection_name=collection_name)
             return 0
-
+            
         except Exception as e:
             logger.error("Failed to delete points: %s", e, exc_info=True)
             raise QdrantError(f"Deletion failed: {e}") from e
-
-    async def delete_by_metadata(
-        self,
-        collection_name: str,
-        metadata_key: str,
-        metadata_value: Any,
-        wait: bool = True
-    ) -> int:
-        if not collection_name:
-            raise ValueError("collection_name cannot be empty")
-        if not metadata_key:
-            raise ValueError("metadata_key cannot be empty")
-        if metadata_value is None:
-            raise ValueError("metadata_value cannot be None")
-        if not await self.client.collection_exists(collection_name):
-            raise CollectionNotFoundError(f"Collection '{collection_name}' not found")
-
-        filter_condition = {metadata_key: metadata_value}
-
-        try:
-            return await self.delete_points(
-                collection_name=collection_name,
-                filter_condition=filter_condition,
-                wait=wait
-            )
-        except ValueError as e:
-            logger.error("Invalid filter for '%s': %s", collection_name, e, exc_info=True)
-            raise ValueError(f"Invalid metadata filter: {e}") from e
-        except Exception as e:
-            logger.error("Failed to delete by metadata from '%s': %s", collection_name, e, exc_info=True)
-            raise QdrantError(f"Failed to delete by metadata: {e}") from e
-
+        
     # ==================== Search ====================
 
     async def search(

@@ -440,38 +440,291 @@ class MarkdownProcessor:
             if start + size >= len(s):
                 break
         return res
-        
+
 
 class FilterBuilder:
-    """Build Qdrant filters from dict conditions."""
+    """Build Qdrant filters from various input formats."""
+    
+    # Префикс для полей внутри metadata
+    METADATA_PREFIX = "metadata."
     
     @staticmethod
-    def build_filter(condition: Dict[str, Any]):
+    def build_filter(condition: Union[Dict[str, Any], List, None]) -> Optional[models.Filter]:
         """
-        Build Qdrant filter from dict.
+        Build Qdrant filter from various input formats.
+        
+        Поддерживаемые форматы:
+        1. Простой словарь: {"chunk_index": 19} -> автоматически добавляет metadata.
+        2. Список условий: [{"chunk_index": 19}, {"source": "README.md"}] -> AND между условиями
+        3. Полный формат с операторами:
+           {
+               "must": [
+                   {"key": "chunk_index", "match": {"value": 19}},
+                   {"key": "score", "range": {"gt": 0.5}}
+               ],
+               "should": [
+                   {"key": "category", "match": {"value": "news"}}
+               ],
+               "must_not": [
+                   {"key": "draft", "match": {"value": True}}
+               ]
+           }
+        4. Прямое field condition: {"key": "chunk_index", "match": {"value": 19}}
+        5. Пустой фильтр: None или {}
         
         Args:
-            condition: Filter condition dict
+            condition: Фильтр в одном из поддерживаемых форматов
             
         Returns:
-            Qdrant Filter object
+            Qdrant Filter object или None
+        """
+        if not condition:
+            return None
+        
+        # Обработка списка условий (AND между элементами)
+        if isinstance(condition, list):
+            return FilterBuilder._build_from_list(condition)
+        
+        # Обработка словаря
+        if isinstance(condition, dict):
+            # Проверяем, это простой key-value словарь?
+            if FilterBuilder._is_simple_dict(condition):
+                return FilterBuilder._build_from_simple_dict(condition)
+            
+            # Проверяем, это прямое field condition?
+            if "key" in condition:
+                return FilterBuilder._build_from_direct_condition(condition)
+            
+            # Полный формат с операторами
+            return FilterBuilder._build_from_operators(condition)
+        
+        return None
+    
+    @staticmethod
+    def _is_simple_dict(condition: Dict[str, Any]) -> bool:
+        """
+        Проверяет, является ли словарь простым key-value фильтром.
+        Простой словарь не содержит ключей-операторов.
+        """
+        operator_keys = {'must', 'should', 'must_not', 'key', 'match', 'range', 
+                        'geo_radius', 'geo_bounding_box', 'is_null', 'nested'}
+        
+        # Если есть хотя бы один ключ-оператор - это не простой словарь
+        for key in condition.keys():
+            if key in operator_keys:
+                return False
+        
+        # Также проверяем, что значения не являются сложными структурами
+        # (для простых словарей значения - это скаляры или списки скаляров)
+        for value in condition.values():
+            if isinstance(value, (dict, list)):
+                # Для списков проверяем, что внутри не словари
+                if isinstance(value, list) and any(isinstance(item, dict) for item in value):
+                    return False
+                # Для словарей проверяем, что это не вложенные условия
+                if isinstance(value, dict) and any(k in operator_keys for k in value.keys()):
+                    return False
+        
+        return True
+    
+    @staticmethod
+    def _add_metadata_prefix(key: str) -> str:
+        """
+        Добавляет префикс metadata. к ключу, если его там еще нет.
+        """
+        if key.startswith("metadata.") or key in ["id", "version"]:
+            return key
+        return f"{FilterBuilder.METADATA_PREFIX}{key}"
+    
+    @staticmethod
+    def _create_match_condition(key: str, value: Any) -> models.FieldCondition:
+        """
+        Создает FieldCondition с правильным типом match в зависимости от значения.
+        """
+        field_path = FilterBuilder._add_metadata_prefix(key)
+        
+        if isinstance(value, (list, tuple)):
+            # Список значений -> MatchAny
+            return models.FieldCondition(
+                key=field_path,
+                match=models.MatchAny(any=list(value))
+            )
+        elif isinstance(value, str) and len(value.split()) > 1:
+            # Длинная строка с пробелами -> MatchText
+            return models.FieldCondition(
+                key=field_path,
+                match=models.MatchText(text=value)
+            )
+        elif isinstance(value, (int, float, bool, str)):
+            # Простые типы -> MatchValue
+            return models.FieldCondition(
+                key=field_path,
+                match=models.MatchValue(value=value)
+            )
+        elif value is None:
+            # None -> IsNull
+            return models.FieldCondition(
+                key=field_path,
+                is_null=models.IsNull(is_null=True)
+            )
+        else:
+            # По умолчанию
+            return models.FieldCondition(
+                key=field_path,
+                match=models.MatchValue(value=value)
+            )
+    
+    @staticmethod
+    def _build_from_simple_dict(condition: Dict[str, Any]) -> Optional[models.Filter]:
+        """
+        Строит фильтр из простого словаря {поле: значение}.
         """
         conditions = []
-        if "must" in condition:
-            for cond in condition["must"]:
-                if "key" in cond and "match" in cond:
-                    conditions.append(
-                        models.FieldCondition(
-                            key=cond["key"],
-                            match=models.MatchValue(value=cond["match"]["value"])
-                        )
-                    )
-                elif "key" in cond and "range" in cond:
-                    conditions.append(
-                        models.FieldCondition(
-                            key=cond["key"],
-                            range=models.Range(**cond["range"])
-                        )
-                    )
+        for key, value in condition.items():
+            field_cond = FilterBuilder._create_match_condition(key, value)
+            conditions.append(field_cond)
         
         return models.Filter(must=conditions) if conditions else None
+    
+    @staticmethod
+    def _build_from_list(conditions_list: List) -> Optional[models.Filter]:
+        """
+        Строит фильтр из списка условий (AND между элементами).
+        """
+        must_conditions = []
+        
+        for item in conditions_list:
+            if isinstance(item, dict):
+                if FilterBuilder._is_simple_dict(item):
+                    # Простой словарь в списке
+                    for key, value in item.items():
+                        field_cond = FilterBuilder._create_match_condition(key, value)
+                        must_conditions.append(field_cond)
+                elif "key" in item:
+                    # Прямое field condition
+                    field_cond = FilterBuilder._build_single_field_condition(item)
+                    if field_cond:
+                        must_conditions.append(field_cond)
+        
+        return models.Filter(must=must_conditions) if must_conditions else None
+    
+    @staticmethod
+    def _build_from_direct_condition(condition: Dict[str, Any]) -> Optional[models.Filter]:
+        """
+        Строит фильтр из прямого field condition.
+        """
+        field_cond = FilterBuilder._build_single_field_condition(condition)
+        if field_cond:
+            return models.Filter(must=[field_cond])
+        return None
+    
+    @staticmethod
+    def _build_single_field_condition(cond: Dict[str, Any]) -> Optional[models.FieldCondition]:
+        """
+        Строит одно полевое условие из словаря.
+        """
+        if "key" not in cond:
+            return None
+        
+        # Добавляем префикс metadata к ключу
+        key_with_prefix = FilterBuilder._add_metadata_prefix(cond["key"])
+        
+        # Match conditions
+        if "match" in cond:
+            match_value = cond["match"]
+            if isinstance(match_value, dict):
+                if "value" in match_value:
+                    return models.FieldCondition(
+                        key=key_with_prefix,
+                        match=models.MatchValue(value=match_value["value"])
+                    )
+                elif "text" in match_value:
+                    return models.FieldCondition(
+                        key=key_with_prefix,
+                        match=models.MatchText(text=match_value["text"])
+                    )
+                elif "any" in match_value:
+                    return models.FieldCondition(
+                        key=key_with_prefix,
+                        match=models.MatchAny(any=match_value["any"])
+                    )
+                elif "except" in match_value:
+                    return models.FieldCondition(
+                        key=key_with_prefix,
+                        match=models.MatchExcept(except_=match_value["except"])
+                    )
+        
+        # Range conditions
+        elif "range" in cond:
+            range_params = cond["range"].copy()
+            # Конвертируем строки в числа если нужно
+            for param in ["gt", "gte", "lt", "lte"]:
+                if param in range_params and isinstance(range_params[param], str):
+                    try:
+                        range_params[param] = float(range_params[param])
+                    except ValueError:
+                        pass
+            return models.FieldCondition(
+                key=key_with_prefix,
+                range=models.Range(**range_params)
+            )
+        
+        # Geo conditions
+        elif "geo_radius" in cond:
+            return models.FieldCondition(
+                key=key_with_prefix,
+                geo_radius=models.GeoRadius(**cond["geo_radius"])
+            )
+        elif "geo_bounding_box" in cond:
+            return models.FieldCondition(
+                key=key_with_prefix,
+                geo_bounding_box=models.GeoBoundingBox(**cond["geo_bounding_box"])
+            )
+        
+        # Is null
+        elif "is_null" in cond:
+            return models.FieldCondition(
+                key=key_with_prefix,
+                is_null=models.IsNull(is_null=cond["is_null"])
+            )
+        
+        return None
+    
+    @staticmethod
+    def _build_from_operators(condition: Dict[str, Any]) -> Optional[models.Filter]:
+        """
+        Строит фильтр из полного формата с операторами must/should/must_not.
+        """
+        filter_kwargs = {}
+        
+        # Must (AND)
+        if "must" in condition and isinstance(condition["must"], list):
+            must_conditions = []
+            for cond in condition["must"]:
+                field_cond = FilterBuilder._build_single_field_condition(cond)
+                if field_cond:
+                    must_conditions.append(field_cond)
+            if must_conditions:
+                filter_kwargs["must"] = must_conditions
+        
+        # Should (OR)
+        if "should" in condition and isinstance(condition["should"], list):
+            should_conditions = []
+            for cond in condition["should"]:
+                field_cond = FilterBuilder._build_single_field_condition(cond)
+                if field_cond:
+                    should_conditions.append(field_cond)
+            if should_conditions:
+                filter_kwargs["should"] = should_conditions
+        
+        # Must_not (NOT)
+        if "must_not" in condition and isinstance(condition["must_not"], list):
+            must_not_conditions = []
+            for cond in condition["must_not"]:
+                field_cond = FilterBuilder._build_single_field_condition(cond)
+                if field_cond:
+                    must_not_conditions.append(field_cond)
+            if must_not_conditions:
+                filter_kwargs["must_not"] = must_not_conditions
+        
+        return models.Filter(**filter_kwargs) if filter_kwargs else None

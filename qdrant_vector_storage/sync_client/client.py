@@ -1,7 +1,5 @@
 """Synchronous Qdrant client implementation."""
 
-from __future__ import annotations
-
 import uuid
 import logging
 from datetime import datetime
@@ -257,9 +255,12 @@ class QdrantSyncClient:
         wait: bool = True,
     ) -> int:
         """Delete points from collection by ids or by filter."""
+        if not collection_name:
+            raise ValueError("collection_name cannot be empty")
         if not self.client.collection_exists(collection_name):
             raise CollectionNotFoundError(f"Collection '{collection_name}' not found")
         try:
+            init_count = self.count_points(collection_name=collection_name)
             if point_ids:
                 result = self.client.delete(
                     collection_name=collection_name,
@@ -268,49 +269,20 @@ class QdrantSyncClient:
                 )
             elif filter_condition:
                 qdrant_filter = FilterBuilder.build_filter(filter_condition)
-                result = self.client.delete(
-                    collection_name=collection_name,
-                    points_selector=models.FilterSelector(filter=qdrant_filter),
-                    wait=wait,
-                )
+                if qdrant_filter is not None:
+                    result = self.client.delete(
+                        collection_name=collection_name,
+                        points_selector=models.FilterSelector(filter=qdrant_filter),
+                        wait=wait,
+                    )
             else:
                 raise ValueError("Either point_ids or filter_condition required")
-
-            # qdrant client returns operation result; deleted count isn't always present.
-            # We return 0 if it can't be inferred.
-            deleted = 0
-            if hasattr(result, "status") and hasattr(result.status, "deleted"):
-                deleted = result.status.deleted
-            elif hasattr(result, "result") and isinstance(result.result, dict):
-                deleted = int(result.result.get("deleted", 0) or 0)
-            return deleted
+            if hasattr(result, 'status') and result.status.value == 'completed':
+                return init_count - self.count_points(collection_name=collection_name)
+            return 0
         except Exception as e:
             logger.error("Failed to delete points: %s", e, exc_info=True)
             raise QdrantError(f"Deletion failed: {e}") from e
-
-    def delete_by_metadata(
-        self,
-        collection_name: str,
-        metadata_key: str,
-        metadata_value: Any,
-        wait: bool = True,
-    ) -> int:
-        """Delete points matching metadata key/value."""
-        if not collection_name:
-            raise ValueError("collection_name cannot be empty")
-        if not metadata_key:
-            raise ValueError("metadata_key cannot be empty")
-        if metadata_value is None:
-            raise ValueError("metadata_value cannot be None")
-        if not self.client.collection_exists(collection_name):
-            raise CollectionNotFoundError(f"Collection '{collection_name}' not found")
-
-        filter_condition = {metadata_key: metadata_value}
-        return self.delete_points(
-            collection_name=collection_name,
-            filter_condition=filter_condition,
-            wait=wait,
-        )
 
     # ==================== Search ====================
 
@@ -353,7 +325,7 @@ class QdrantSyncClient:
                         id=str(hit.id),
                         score=float(hit.score),
                         text=payload.get("text", ""),
-                        metadata=payload.get("metadata", {}) or {},
+                        metadata=payload.get("metadata", {}),
                     )
                 )
             return results

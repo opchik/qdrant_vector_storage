@@ -36,7 +36,6 @@ def chunks_to_points(
 
         md = dict(base_metadata)
         md.update(ch.metadata or {})
-        md.setdefault("chunk_index", ch.index)
 
         points.append(
             Point(
