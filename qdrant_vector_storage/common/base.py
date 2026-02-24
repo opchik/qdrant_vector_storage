@@ -75,6 +75,9 @@ class MarkdownProcessor:
             source_name=source_name,
             assume_base64_if_looks_like=assume_base64_if_looks_like,
         )
+        source_name = Path(resolved_name)
+        if source_name.exists():
+            resolved_name = source_name.name
         md_text = self._normalize_newlines(md_text)
 
         units = self._split_to_units(md_text)
@@ -138,10 +141,19 @@ class MarkdownProcessor:
         # Используем батчирование на нашей стороне для предсказуемости по памяти.
         for start in range(0, len(texts), self.batch_size):
             batch = texts[start : start + self.batch_size]
-            for vec in self._embedder.embed(batch):
-                v = vec.tolist()  # np.ndarray -> list[float]
-                out.append(v)
-
+            if hasattr(self._embedder, "embed"):
+                for vec in self._embedder.embed(batch):
+                    v = vec.tolist()  # np.ndarray -> list[float]
+                    out.append(v)
+            elif hasattr(self._embedder, "encode"):
+                for vec in self._embedder.encode(batch):
+                    v = vec.tolist()  # np.ndarray -> list[float]
+                    out.append(v)
+            else: 
+                raise ValueError(
+                    f"Отсутствуют методы embed или encode для "
+                    f"модели {getattr(self._embedder, "model_name", type(self._embedder).__name__)}"
+                )
         # (не обязательно) сверка размерности
         if out and self._expected_dim and len(out[0]) != self._expected_dim:
             # Не падаем всегда: в fastembed иногда модель может иметь иную фактическую размерность.
