@@ -103,11 +103,10 @@ with QdrantSyncClient(url="http://localhost:6333") as client:
 
 ## Требования к embedder
 
-`MarkdownProcessor` ожидает объект, у которого есть метод:
+`MarkdownProcessor` ожидает объект, у которого есть методы:
 
 - `embed(texts: List[str]) -> Iterable[np.ndarray]`
-
-Именно так работает `fastembed.TextEmbedding`.
+- `encode(texts: List[str]) -> Iterable[np.ndarray]`
 
 ---
 

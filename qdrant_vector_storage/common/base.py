@@ -115,7 +115,7 @@ class MarkdownProcessor:
             )
         return chunks
 
-    def embed_query(self, query_text: str, *, add_query_prefix: bool = True) -> List[float]:
+    def embed_query(self, query_text: str, *, add_query_prefix: bool = False) -> List[float]:
         """
         Утилита для эмбеддинга поискового запроса (E5: "query: ").
         """

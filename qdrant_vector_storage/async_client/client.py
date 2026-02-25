@@ -6,7 +6,7 @@ import os
 import uuid
 import logging
 from datetime import datetime
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List, Dict, Any, Union, Literal
 
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.http import models
@@ -296,48 +296,205 @@ class QdrantAsyncClient:
     async def search(
         self,
         collection_name: str,
-        query_vector: List[float],
+        query_vector: Optional[List[float]] = None,
+        query_point_id: Optional[Union[str, int]] = None,
+        filter_only: Optional[Dict[str, Any]] = None,
         limit: int = 10,
         score_threshold: Optional[float] = None,
         filter_condition: Optional[Dict[str, Any]] = None,
         with_payload: bool = True,
-        with_vectors: bool = False
+        search_mode: Literal["vector", "id", "filter", "hybrid"] = "vector",
     ) -> List[SearchResult]:
+        """
+        Универсальный метод поиска с поддержкой различных типов запросов
+        
+        Args:
+            collection_name: Имя коллекции
+            query_vector: Вектор запроса (для векторного или гибридного поиска)
+            query_point_id: ID точки для поиска похожих (рекомендации)
+            filter_only: Поиск только по фильтру (без вектора)
+            limit: Максимальное количество результатов
+            score_threshold: Порог релевантности
+            filter_condition: Условия фильтрации
+            with_payload: Возвращать ли payload
+            with_vectors: Возвращать ли векторы
+            search_mode: Режим поиска:
+                - "vector": только по вектору
+                - "id": поиск похожих на точку по ID
+                - "filter": только по фильтру (без вектора)
+                - "hybrid": комбинированный поиск (вектор + фильтр)
+            hybrid_weight: Вес векторного поиска в гибридном режиме (0-1)
+        
+        Returns:
+            Список результатов поиска
+        """
         if not collection_name:
             raise ValueError("collection_name cannot be empty")
-        if not query_vector:
-            raise ValueError("query_vector cannot be empty")
         if limit <= 0:
             raise ValueError("limit must be positive")
         if not await self.client.collection_exists(collection_name):
             raise CollectionNotFoundError(f"Collection '{collection_name}' not found")
-
+        if search_mode == "vector" and query_vector is None:
+            raise ValueError("query_vector is required for vector search")
+        if search_mode == "id" and query_point_id is None:
+            raise ValueError("query_point_id is required for id-based search")
+        if search_mode == "filter" and filter_only is None:
+            raise ValueError("filter_only is required for filter-only search")
+        if search_mode == "hybrid" and query_vector is None:
+            raise ValueError("query_vector is required for hybrid search")
         try:
             search_filter = FilterBuilder.build_filter(filter_condition) if filter_condition else None
-            hits = await self.client.query_points(
-                collection_name=collection_name,
-                query=query_vector,
-                limit=limit,
-                query_filter=search_filter,
-                score_threshold=score_threshold,
-                with_payload=with_payload,
-                with_vectors=with_vectors
-            )
-            results: List[SearchResult] = []
-            for hit in hits.points:
-                payload = hit.payload or {}
-                results.append(
-                    SearchResult(
-                        id=str(hit.id),
-                        score=hit.score,
-                        text=payload.get("text", ""),
-                        metadata=payload.get("metadata", {})
-                    )
+            if search_mode == "vector":
+                hits = await self._vector_search(
+                    collection_name=collection_name, 
+                    query_vector=query_vector, 
+                    limit=limit, 
+                    score_threshold=score_threshold, 
+                    search_filter=search_filter,
+                    with_payload=with_payload, 
                 )
-            return results
+            elif search_mode == "id":
+                hits = await self._id_based_search(
+                    collection_name=collection_name,
+                    point_id=query_point_id, 
+                    limit=limit, 
+                    score_threshold=score_threshold,
+                    search_filter=search_filter, 
+                    with_payload=with_payload
+                )
+            elif search_mode == "filter":
+                hits = await self._filter_only_search(
+                    collection_name=collection_name, 
+                    filter_only=filter_only, 
+                    limit=limit, 
+                    with_payload=with_payload
+                )
+            elif search_mode == "hybrid":
+                hits = await self._hybrid_search(
+                    collection_name=collection_name, 
+                    query_vector=query_vector, 
+                    filter_condition=filter_condition, 
+                    limit=limit,
+                    score_threshold=score_threshold, 
+                    with_payload=with_payload
+                )
+            else:
+                raise ValueError(f"Unsupported search mode: {search_mode}")
+            return self._process_results(hits)
         except Exception as e:
             logger.error("Search failed: %s", e, exc_info=True)
             raise QdrantError(f"Search failed: {e}") from e
+
+    async def _vector_search(
+        self, 
+        collection_name: str, 
+        query_vector: List[float], 
+        limit: int,
+        score_threshold: Optional[float], 
+        search_filter: Optional[models.Filter],
+        with_payload: bool, 
+    ):
+        """Векторный поиск"""
+        hits = await self.client.query_points(
+            collection_name=collection_name,
+            query=query_vector,
+            limit=limit,
+            query_filter=search_filter,
+            score_threshold=score_threshold,
+            with_payload=with_payload,
+        )
+        return hits.points
+
+    async def _id_based_search(
+        self, 
+        collection_name: str, 
+        point_id: Union[str, int], 
+        limit: int,
+        score_threshold: Optional[float], 
+        search_filter: Optional[models.Filter],
+        with_payload: bool, 
+    ):
+        """Поиск похожих на точку по ID (рекомендации)"""
+        point = await self.client.retrieve(
+            collection_name=collection_name,
+            ids=[point_id],
+            with_vectors=True
+        )
+        if not point:
+            return []
+        query_vector = point[0].vector
+        hits = await self.client.query_points(
+            collection_name=collection_name,
+            query=query_vector,
+            limit=limit,
+            query_filter=search_filter,
+            score_threshold=score_threshold,
+            with_payload=with_payload,
+        )
+        return hits.points
+
+    async def _filter_only_search(
+        self, 
+        collection_name: str, 
+        filter_only: Dict[str, Any], 
+        limit: int,
+        with_payload: bool, 
+    ):
+        """Поиск только по фильтру (скроллинг)"""
+        scroll_filter = FilterBuilder.build_filter(filter_only)
+        points, _ = await self.client.scroll(
+            collection_name=collection_name,
+            scroll_filter=scroll_filter,
+            limit=limit,
+            with_payload=with_payload,
+        )
+        for point in points:
+            point.score = 1.0
+        return points
+
+    async def _hybrid_search(
+        self, 
+        collection_name: str, 
+        query_vector: List[float], 
+        filter_condition: Optional[Dict[str, Any]], 
+        limit: int,
+        score_threshold: Optional[float], 
+        with_payload: bool, 
+    ):
+        """Гибридный поиск с использованием prefetch и fusion"""
+        search_filter = FilterBuilder.build_filter(filter_condition) if filter_condition else None
+        hits = await self.client.query_points(
+            collection_name=collection_name,
+            prefetch=[
+                models.Prefetch(
+                    query=query_vector,
+                    query_filter=search_filter,
+                    limit=limit * 2,
+                )
+            ],
+            query=models.FusionQuery(
+                fusion=models.Fusion.RRF
+            ),
+            limit=limit,
+            score_threshold=score_threshold,
+            with_payload=with_payload,
+        )
+        return hits.points
+
+    def _process_results(self, points) -> List[SearchResult]:
+        """Обработка результатов поиска"""
+        results: List[SearchResult] = []
+        for point in points:
+            payload = point.payload or {}
+            results.append(
+                SearchResult(
+                    id=str(point.id),
+                    score=getattr(point, 'score', 1.0),
+                    text=payload.get("text", ""),
+                    metadata=payload.get("metadata", {})
+                )
+            )
+        return results
 
     # ==================== Utility Methods ====================
 
