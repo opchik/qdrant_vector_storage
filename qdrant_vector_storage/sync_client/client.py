@@ -291,10 +291,9 @@ class QdrantSyncClient:
         collection_name: str,
         query_vector: Optional[List[float]] = None,
         query_point_id: Optional[Union[str, int]] = None,
-        filter_only: Optional[Dict[str, Any]] = None,
+        filter_condition: Optional[Dict[str, Any]] = None,
         limit: int = 10,
         score_threshold: Optional[float] = None,
-        filter_condition: Optional[Dict[str, Any]] = None,
         with_payload: bool = True,
         search_mode: Literal["vector", "id", "filter", "hybrid"] = "vector",
     ) -> List[SearchResult]:
@@ -331,7 +330,7 @@ class QdrantSyncClient:
             raise ValueError("query_vector is required for vector search")
         if search_mode == "id" and query_point_id is None:
             raise ValueError("query_point_id is required for id-based search")
-        if search_mode == "filter" and filter_only is None:
+        if search_mode == "filter" and filter_condition is None:
             raise ValueError("filter_only is required for filter-only search")
         if search_mode == "hybrid" and query_vector is None:
             raise ValueError("query_vector is required for hybrid search")
@@ -358,7 +357,7 @@ class QdrantSyncClient:
             elif search_mode == "filter":
                 hits = self._filter_only_search(
                     collection_name=collection_name, 
-                    filter_only=filter_only, 
+                    filter_only=filter_condition, 
                     limit=limit, 
                     with_payload=with_payload
                 )
@@ -441,8 +440,6 @@ class QdrantSyncClient:
             limit=limit,
             with_payload=with_payload,
         )
-        for point in points:
-            point.score = 1.0
         return points
 
     def _hybrid_search(
