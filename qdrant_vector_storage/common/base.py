@@ -65,7 +65,7 @@ class MarkdownProcessor:
         *,
         source_name: Optional[str] = None,
         assume_base64_if_looks_like: bool = True,
-        add_passage_prefix: bool = True,
+        **kwargs
     ) -> List[TextChunk]:
         """
         Полный пайплайн: загрузка -> чанки -> эмбеддинги -> List[TextChunk] с vector.
@@ -84,16 +84,14 @@ class MarkdownProcessor:
         texts = self._units_to_chunks(units)
 
         # Подготовка строк для эмбеддинга (E5: passage/query префиксы)
-        embed_texts: List[str] = []
         kept_texts: List[str] = []
         for t in texts:
             tt = t.strip()
             if not tt:
                 continue
             kept_texts.append(tt)
-            embed_texts.append(f"{self.passage_prefix}{tt}" if add_passage_prefix else tt)
 
-        vectors = self._embed(embed_texts)
+        vectors = self._embed(kept_texts, **kwargs)
 
         chunks: List[TextChunk] = []
         for i, (plain, vec) in enumerate(zip(kept_texts, vectors)):
@@ -107,7 +105,6 @@ class MarkdownProcessor:
                         "embedding_dimension": len(vec),
                         "chunk_size": self.chunk_size,
                         "chunk_overlap": self.chunk_overlap,
-                        "passage_prefix_added": bool(add_passage_prefix),
                         "created_at": datetime.now()
                     },
                     vector=vec,
@@ -115,20 +112,19 @@ class MarkdownProcessor:
             )
         return chunks
 
-    def embed_query(self, query_text: str, *, add_query_prefix: bool = False) -> List[float]:
+    def embed_query(self, query_text: str, **kwargs) -> List[float]:
         """
         Утилита для эмбеддинга поискового запроса (E5: "query: ").
         """
-        q = query_text.strip()
-        if not q:
+        text = query_text.strip()
+        if not text:
             raise ValueError("query_text пустой")
-        text = f"query: {q}" if add_query_prefix else q
-        vecs = self._embed([text])
+        vecs = self._embed([text], **kwargs)
         return vecs[0]
 
     # ---------------------------- Embedding ----------------------------
 
-    def _embed(self, texts: List[str]) -> List[List[float]]:
+    def _embed(self, texts: List[str], **kwargs) -> List[List[float]]:
         """
         Считает эмбеддинги батчами через fastembed.
         """
@@ -142,11 +138,11 @@ class MarkdownProcessor:
         for start in range(0, len(texts), self.batch_size):
             batch = texts[start : start + self.batch_size]
             if hasattr(self._embedder, "embed"):
-                for vec in self._embedder.embed(batch):
+                for vec in self._embedder.embed(batch, **kwargs):
                     v = vec.tolist()  # np.ndarray -> list[float]
                     out.append(v)
             elif hasattr(self._embedder, "encode"):
-                for vec in self._embedder.encode(batch):
+                for vec in self._embedder.encode(batch, **kwargs):
                     v = vec.tolist()  # np.ndarray -> list[float]
                     out.append(v)
             else: 
