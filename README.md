@@ -183,10 +183,10 @@ with QdrantSyncClient(url="http://localhost:6333") as client:
 
 | Режим | Обязательные параметры | Дополнительные параметры | Описание |
 |-------|------------------------|--------------------------|----------|
-| `"vector"` | `query_vector` | `filter_condition` | Классический поиск по вектору с опциональной фильтрацией |
-| `"id"` | `query_point_id` | `filter_condition` | Поиск точек, похожих на точку с указанным ID |
-| `"filter"` | `filter_only` | – | Поиск только по фильтру без вектора |
-| `"hybrid"` | `query_vector` | `filter_condition` | Гибридный поиск с RRF (вектор + фильтр) |
+| `'vector'` | `query_vector` | `filter_condition` | Классический поиск по вектору с опциональной фильтрацией |
+| `'id'` | `query_point_id` | `filter_condition` | Поиск точек, похожих на точку с указанным ID |
+| `'filter'` | `filter_condition` | – | Поиск только по фильтру без вектора |
+| `'hybrid'` | `query_vector` | `filter_condition` | Гибридный поиск с RRF (вектор + фильтр) |
 
 ## 4) Утилиты
 

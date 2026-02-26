@@ -303,6 +303,7 @@ class QdrantAsyncClient:
         score_threshold: Optional[float] = None,
         with_payload: bool = True,
         search_mode: Literal["vector", "id", "filter", "hybrid"] = "vector",
+        **kwargs
     ) -> List[SearchResult]:
         """
         Универсальный метод поиска с поддержкой различных типов запросов
@@ -350,7 +351,8 @@ class QdrantAsyncClient:
                     limit=limit, 
                     score_threshold=score_threshold, 
                     search_filter=search_filter,
-                    with_payload=with_payload, 
+                    with_payload=with_payload,
+                    **kwargs
                 )
             elif search_mode == "id":
                 hits = await self._id_based_search(
@@ -359,14 +361,16 @@ class QdrantAsyncClient:
                     limit=limit, 
                     score_threshold=score_threshold,
                     search_filter=search_filter, 
-                    with_payload=with_payload
+                    with_payload=with_payload,
+                    **kwargs
                 )
             elif search_mode == "filter":
                 hits = await self._filter_only_search(
                     collection_name=collection_name, 
                     filter_only=filter_condition, 
                     limit=limit, 
-                    with_payload=with_payload
+                    with_payload=with_payload,
+                    **kwargs
                 )
             elif search_mode == "hybrid":
                 hits = await self._hybrid_search(
@@ -375,7 +379,8 @@ class QdrantAsyncClient:
                     filter_condition=filter_condition, 
                     limit=limit,
                     score_threshold=score_threshold, 
-                    with_payload=with_payload
+                    with_payload=with_payload,
+                    **kwargs
                 )
             else:
                 raise ValueError(f"Unsupported search mode: {search_mode}")
@@ -391,7 +396,8 @@ class QdrantAsyncClient:
         limit: int,
         score_threshold: Optional[float], 
         search_filter: Optional[models.Filter],
-        with_payload: bool, 
+        with_payload: bool,
+        **kwargs
     ):
         """Векторный поиск"""
         hits = await self.client.query_points(
@@ -401,6 +407,7 @@ class QdrantAsyncClient:
             query_filter=search_filter,
             score_threshold=score_threshold,
             with_payload=with_payload,
+            **kwargs
         )
         return hits.points
 
@@ -411,7 +418,8 @@ class QdrantAsyncClient:
         limit: int,
         score_threshold: Optional[float], 
         search_filter: Optional[models.Filter],
-        with_payload: bool, 
+        with_payload: bool,
+        **kwargs
     ):
         """Поиск похожих на точку по ID (рекомендации)"""
         point = await self.client.retrieve(
@@ -429,6 +437,7 @@ class QdrantAsyncClient:
             query_filter=search_filter,
             score_threshold=score_threshold,
             with_payload=with_payload,
+            **kwargs
         )
         return hits.points
 
@@ -437,7 +446,8 @@ class QdrantAsyncClient:
         collection_name: str, 
         filter_only: Dict[str, Any], 
         limit: int,
-        with_payload: bool, 
+        with_payload: bool,
+        **kwargs
     ):
         """Поиск только по фильтру (скроллинг)"""
         scroll_filter = FilterBuilder.build_filter(filter_only)
@@ -446,6 +456,7 @@ class QdrantAsyncClient:
             scroll_filter=scroll_filter,
             limit=limit,
             with_payload=with_payload,
+            **kwargs
         )
         return points
 
@@ -456,7 +467,8 @@ class QdrantAsyncClient:
         filter_condition: Optional[Dict[str, Any]], 
         limit: int,
         score_threshold: Optional[float], 
-        with_payload: bool, 
+        with_payload: bool,
+        **kwargs
     ):
         """Гибридный поиск с использованием prefetch и fusion"""
         search_filter = FilterBuilder.build_filter(filter_condition) if filter_condition else None
@@ -465,7 +477,7 @@ class QdrantAsyncClient:
             prefetch=[
                 models.Prefetch(
                     query=query_vector,
-                    query_filter=search_filter,
+                    filter=search_filter,
                     limit=limit * 2,
                 )
             ],
@@ -475,6 +487,7 @@ class QdrantAsyncClient:
             limit=limit,
             score_threshold=score_threshold,
             with_payload=with_payload,
+            **kwargs
         )
         return hits.points
 
