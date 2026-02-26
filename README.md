@@ -126,9 +126,9 @@ with QdrantSyncClient(url="http://localhost:6333") as client:
 
 | Метод | Входные параметры | Выход | Назначение |
 |---|---|---|---|
-| `MarkdownProcessor(embedder, chunk_size=900, chunk_overlap=120, keep_headings=True, keep_code_blocks=True, batch_size=64, expected_dim=None)` | `embedder`: объект с `.embed(List[str])`; параметры чанкинга/батчинга | `MarkdownProcessor` | Создание процессора Markdown |
-| `build_chunks(source, source_name=None, assume_base64_if_looks_like=True, **kwargs)` | `source`: `str` или `PathLike` | `List[TextChunk]` (вектор заполнен) | Полный пайплайн: загрузка → чанки → эмбеддинги |
-| `embed_query(query_text, **kwargs)` | `query_text: str` | `List[float]` | Эмбеддинг запроса |
+| `MarkdownProcessor()` | `embedder`: объект с `.embed(List[str], **kwargs)` или <br> `.encode(List[str], **kwargs)`;<br>`chunk_size: int = 900`;<br>`chunk_overlap: int = 120`;<br>`keep_headings: bool = True`;<br>`keep_code_blocks: bool = True`;<br>`batch_size: int = 64`;<br>`expected_dim: Optional[int] = None`| `MarkdownProcessor` | Создание процессора Markdown |
+| `build_chunks()` | `source: Union[str, PathLike]`;<br> `source_name: Optional[str] = None`;<br>`assume_base64_if_looks_like: bool = True`;<br>`**kwargs`| `List[TextChunk]` (вектор заполнен) | Полный пайплайн: загрузка → чанки → эмбеддинги |
+| `embed_query()` | `query_text: str`;<br>`**kwargs` | `List[float]` | Эмбеддинг запроса |
 
 ---
 
@@ -138,44 +138,43 @@ with QdrantSyncClient(url="http://localhost:6333") as client:
 
 ### Конструктор
 
-| Метод | Параметры | Выход | Исключения | Описание |
+| Метод | Входные параметры | Выход | Исключения | Описание |
 |-------|-----------|-------|------------|----------|
-| `QdrantSyncClient()`<br>`QdrantAsyncClient()` | `url: str` – адрес Qdrant<br>`api_key: Optional[str]` – ключ API<br>`timeout: int` – таймаут запросов (60)<br>`**kwargs` – доп. параметры клиента | объект клиента | `ConnectionError` | Инициализация подключения к Qdrant |
+| `QdrantSyncClient()`<br>`QdrantAsyncClient()` | `url: str`;<br>`api_key: Optional[str]`;<br>`timeout: int = 60`;<br>`**kwargs`| объект клиента | `ConnectionError` | Инициализация подключения к Qdrant |
 
 ### Управление коллекциями
 
-| Метод | Параметры | Выход | Исключения | Описание |
+| Метод | Входные  параметры | Выход | Исключения | Описание |
 |-------|-----------|-------|------------|----------|
-| `create_collection()` | `collection_name: str` – имя коллекции<br>`vector_size: int` – размерность векторов<br>`distance: Distance` – метрика (COSINE)<br>`on_disk_payload: bool` – payload на диске (True)<br>`**kwargs` – доп. параметры | `Dict[str, Any]` – информация о коллекции | `CollectionExistsError`<br>`QdrantError` | Создание новой коллекции |
-| `get_collection_info()` | `collection_name: str` – имя коллекции | `Dict[str, Any]` – информация о коллекции | `CollectionNotFoundError`<br>`QdrantError` | Получение информации о коллекции |
-| `list_collections()` | – | `List[str]` – список имен коллекций | `QdrantError` | Получение списка всех коллекций |
-| `delete_collection()` | `collection_name: str` – имя коллекции | `bool` – успех операции | – | Удаление коллекции |
+| `create_collection()` | `collection_name: str`;<br>`vector_size: int`;<br>`distance: Distance = Distance.COSINE`;<br>`on_disk_payload: bool = True`;<br>`**kwargs`| `Dict[str, Any]`| `CollectionExistsError`<br>`QdrantError` | Создание новой коллекции |
+| `get_collection_info()` | `collection_name: str`| `Dict[str, Any]` – информация о коллекции | `CollectionNotFoundError`<br>`QdrantError` | Получение информации о коллекции |
+| `list_collections()` | – | `List[str]` | `QdrantError` | Получение списка всех коллекций |
+| `delete_collection()` | `collection_name: str` | `bool` – успех операции | – | Удаление коллекции |
 
 ### Загрузка данных
 
-| Метод | Параметры | Выход | Исключения | Описание |
+| Метод | Входные  параметры | Выход | Исключения | Описание |
 |-------|-----------|-------|------------|----------|
-| `upload_points()` | `collection_name: str` – имя коллекции<br>`points: List[Point]` – точки для загрузки<br>`batch_size: int` – размер батча (100)<br>`wait: bool` – ждать завершения (True) | `List[str]` – ID загруженных точек | `CollectionNotFoundError`<br>`QdrantError` | Загрузка точек в коллекцию |
-| `upload_markdown()` | `collection_name: str` – имя коллекции<br>`md_input: str | PathLike` – Markdown (текст/base64/путь)<br>`processor: MarkdownProcessor` – процессор для чанков<br>`source_name: Optional[str]` – имя источника<br>`metadata: Optional[Dict]` – метаданные<br>`batch_size: int` – размер батча (100)<br>`wait: bool` – ждать завершения (True)<br>`processor_kwargs: Optional[Dict]` – параметры процессора | `FileUploadResult` – результат загрузки | `CollectionNotFoundError`<br>`FileProcessingError`<br>`EmbeddingError`<br>`QdrantError` | Загрузка Markdown с автоматической векторизацией |
+| `upload_points()` | `collection_name: str`;<br>`points: List[Point]`;<br>`batch_size: int = 100`;<br>`wait: bool = True` | `List[str]` | `CollectionNotFoundError`<br>`QdrantError` | Загрузка точек в коллекцию |
+| `upload_markdown()` | `collection_name: str`;<br>`md_input: Union[str,  PathLike]` – Markdown (текст/base64/путь);<br>`processor: MarkdownProcessor`;<br>`source_name: Optional[str]`;<br>`metadata: Optional[Dict]`;<br>`batch_size: int = 100`;<br>`wait: bool = True`;<br>`processor_kwargs: Optional[Dict] = None` | `FileUploadResult` – результат загрузки | `CollectionNotFoundError`<br>`FileProcessingError`<br>`EmbeddingError`<br>`QdrantError` | Загрузка Markdown с автоматической векторизацией |
 
 ### Удаление данных
 
-| Метод | Параметры | Выход | Исключения | Описание |
+| Метод | Входные параметры | Выход | Исключения | Описание |
 |-------|-----------|-------|------------|----------|
-| `delete_points()` | `collection_name: str` – имя коллекции<br>`point_ids: Optional[List[str]]` – ID точек<br>`filter_condition: Optional[Dict]` – фильтр для удаления<br>`wait: bool` – ждать завершения (True) | `int` – количество удаленных точек | `CollectionNotFoundError`<br>`QdrantError` | Удаление точек по ID или фильтру |
-| `delete_by_metadata()` | `collection_name: str` – имя коллекции<br>`metadata_key: str` – ключ в metadata<br>`metadata_value: Any` – значение<br>`wait: bool` – ждать завершения (True) | `int` – количество удаленных точек | `CollectionNotFoundError`<br>`QdrantError` | Удаление точек по значению в metadata |
+| `delete_points()` | `collection_name: str`;<br>`point_ids: Optional[List[str]]`;<br>`filter_condition: Optional[Dict]`;<br>`wait: bool = True` | `int` – количество удаленных точек | `CollectionNotFoundError`<br>`QdrantError` | Удаление точек по ID или фильтру |
 
 ### Поиск (универсальный метод)
 
-| Метод | Параметры | Выход | Исключения | Описание |
+| Метод | Входные параметры | Выход | Исключения | Описание |
 |-------|-----------|-------|------------|----------|
-| `search()` | `collection_name: str` – имя коллекции<br>`query_vector: Optional[List[float]]` – вектор запроса<br>`query_point_id: Optional[Union[str, int]]` – ID точки для поиска похожих<br>`filter_condition: Optional[Dict]` – фильтр<br>`limit: int` – лимит результатов (10)<br>`score_threshold: Optional[float]` – порог схожести<br>`with_payload: bool` – загружать payload (True)<br>`search_mode: Literal["vector", "id", "filter", "hybrid"]` – режим поиска ("vector") | `List[SearchResult]` – результаты поиска | `CollectionNotFoundError`<br>`QdrantError`<br>`ValueError` | Универсальный поиск – векторный, по ID, по фильтру или гибридный |
+| `search()` | `collection_name: str`;<br>`query_vector: Optional[List[float]]`;<br>`query_point_id: Optional[Union[str, int]]`;<br>`filter_condition: Optional[Dict]`;<br>`limit: int = 10`;<br>`score_threshold: Optional[float] = None`;<br>`with_payload: bool = True`;<br>`search_mode: Literal["vector", "id", "filter", "hybrid"]` | `List[SearchResult]` – результаты поиска | `CollectionNotFoundError`<br>`QdrantError`<br>`ValueError` | Универсальный поиск – векторный, по ID, по фильтру или гибридный |
 
 ### Вспомогательные методы
 
-| Метод | Параметры | Выход | Исключения | Описание |
+| Метод | Входные параметры | Выход | Исключения | Описание |
 |-------|-----------|-------|------------|----------|
-| `count_points()` | `collection_name: str` – имя коллекции<br>`filter_condition: Optional[Dict]` – фильтр<br>`exact: bool` – точный подсчет (False) | `int` – количество точек | `CollectionNotFoundError`<br>`QdrantError` | Подсчет точек в коллекции |
+| `count_points()` | `collection_name: str`;<br>`filter_condition: Optional[Dict]`;<br>`exact: bool = False` | `int` – количество точек | `CollectionNotFoundError`<br>`QdrantError` | Подсчет точек в коллекции |
 | `healthcheck()` | – | `bool` – доступен ли Qdrant | – | Проверка подключения к Qdrant |
 | `close()` | – | `None` | – | Закрытие соединения |
 
@@ -194,10 +193,10 @@ with QdrantSyncClient(url="http://localhost:6333") as client:
 
 | Метод | Входные параметры | Выход | Назначение |
 |---|---|---|---|
-| `FilterBuilder.build_filter(condition)` | `condition: Dict[str, Any]` | `models.Filter | None` | Сборка Qdrant-фильтра из словаря |
+| `FilterBuilder.build_filter()` | `condition: Dict[str, Any]` | `models.Filter | None` | Сборка Qdrant-фильтра из словаря |
 
 ### Конвертеры
 
 | Функция | Входные параметры | Выход | Назначение |
 |---|---|---|---|
-| `chunks_to_points(chunks, base_metadata=None, id_factory=None)` | `List[TextChunk]` | `List[Point]` | Преобразование чанков в точки для upsert |
+| `chunks_to_points()` | `chunks: List[TextChunk]`;<br>`base_metadata: Optional[Dict[str, Any]] = None`;<br>`id_factory: Optional[callable] = None`| `List[Point]` | Преобразование чанков в точки для upsert |

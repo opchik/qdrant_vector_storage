@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "qdrant_vector_storage"
-version = "0.1.9"
+version = "0.1.10"
 description = "Sync/async Qdrant clients with Markdown chunking and pluggable embedding pipeline."
 readme = "README.md"
 requires-python = ">=3.9"

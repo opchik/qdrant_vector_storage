@@ -1,7 +1,5 @@
 """Conversion helpers between intermediate chunks and Qdrant points."""
 
-from __future__ import annotations
-
 import uuid
 from typing import Any, Dict, List, Optional
 
