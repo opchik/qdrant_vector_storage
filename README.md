@@ -126,9 +126,9 @@ with QdrantSyncClient(url="http://localhost:6333") as client:
 
 | Метод | Входные параметры | Выход | Назначение |
 |---|---|---|---|
-| `MarkdownProcessor(embedder, chunk_size=900, chunk_overlap=120, keep_headings=True, keep_code_blocks=True, passage_prefix="passage: ", batch_size=64, expected_dim=None)` | `embedder`: объект с `.embed(List[str])`; параметры чанкинга/батчинга | `MarkdownProcessor` | Создание процессора Markdown |
-| `build_chunks(source, source_name=None, assume_base64_if_looks_like=True, add_passage_prefix=True)` | `source`: `str` или `PathLike` | `List[TextChunk]` (вектор заполнен) | Полный пайплайн: загрузка → чанки → эмбеддинги |
-| `embed_query(query_text, add_query_prefix=True)` | `query_text: str` | `List[float]` | Эмбеддинг запроса (для E5-подобных моделей можно добавлять префикс `query:`) |
+| `MarkdownProcessor(embedder, chunk_size=900, chunk_overlap=120, keep_headings=True, keep_code_blocks=True, batch_size=64, expected_dim=None)` | `embedder`: объект с `.embed(List[str])`; параметры чанкинга/батчинга | `MarkdownProcessor` | Создание процессора Markdown |
+| `build_chunks(source, source_name=None, assume_base64_if_looks_like=True, **kwargs)` | `source`: `str` или `PathLike` | `List[TextChunk]` (вектор заполнен) | Полный пайплайн: загрузка → чанки → эмбеддинги |
+| `embed_query(query_text, **kwargs)` | `query_text: str` | `List[float]` | Эмбеддинг запроса |
 
 ---
 

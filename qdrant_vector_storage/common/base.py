@@ -37,7 +37,6 @@ class MarkdownProcessor:
         chunk_overlap: int = 120,
         keep_headings: bool = True,
         keep_code_blocks: bool = True,
-        passage_prefix: str = "passage: ",
         batch_size: int = 64,
         expected_dim: Optional[int] = None,
     ) -> None:
@@ -54,7 +53,6 @@ class MarkdownProcessor:
         self.chunk_overlap = chunk_overlap
         self.keep_headings = keep_headings
         self.keep_code_blocks = keep_code_blocks
-        self.passage_prefix = passage_prefix
         self.batch_size = batch_size
 
     # ---------------------------- Public API ----------------------------
@@ -114,7 +112,7 @@ class MarkdownProcessor:
 
     def embed_query(self, query_text: str, **kwargs) -> List[float]:
         """
-        Утилита для эмбеддинга поискового запроса (E5: "query: ").
+        Утилита для эмбеддинга поискового запроса.
         """
         text = query_text.strip()
         if not text:
