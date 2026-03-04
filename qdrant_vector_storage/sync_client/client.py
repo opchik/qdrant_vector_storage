@@ -1,8 +1,8 @@
 """Synchronous Qdrant client implementation."""
 
+import os
 import uuid
 import logging
-from datetime import datetime
 from typing import Any, Dict, List, Optional, Union, Literal
 
 from qdrant_client import QdrantClient
@@ -137,13 +137,11 @@ class QdrantSyncClient:
             raise CollectionNotFoundError(f"Collection '{collection_name}' not found")
         if not points:
             return []
-
         for p in points:
             if p.vector is None:
                 raise ValueError(f"Point {p.id} has no vector")
             if not p.text:
                 raise ValueError(f"Point {p.id} has no text")
-
         try:
             cur_points: List[models.PointStruct] = []
             point_ids: List[str] = []
@@ -157,7 +155,6 @@ class QdrantSyncClient:
                         payload={"text": p.text, "metadata": p.metadata or {}},
                     )
                 )
-
             for i in range(0, len(cur_points), batch_size):
                 batch = cur_points[i : i + batch_size]
                 self.client.upsert(collection_name=collection_name, points=batch, wait=wait)
@@ -173,7 +170,6 @@ class QdrantSyncClient:
         processor: MarkdownProcessor,
         *,
         source_name: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
         batch_size: int = 100,
         wait: bool = True,
         processor_kwargs: Optional[Dict[str, Any]] = None,
@@ -214,23 +210,16 @@ class QdrantSyncClient:
             if not chunks:
                 raise FileProcessingError("No text content extracted from markdown input")
 
-            base_meta: Dict[str, Any] = dict(metadata or {})
-            if source_name:
-                base_meta.setdefault("source", source_name)
-            base_meta.setdefault("created_at", datetime.now().isoformat())
-
             try:
-                points = chunks_to_points(chunks, base_metadata=base_meta)
+                points = chunks_to_points(chunks)
             except Exception as e:
                 raise EmbeddingError(f"Failed to build points from chunks: {e}") from e
-
             point_ids = self.upload_points(
                 collection_name=collection_name,
                 points=points,
                 batch_size=batch_size,
                 wait=wait,
             )
-
             file_name = source_name or f"markdown_input_{str(uuid.uuid4())}"
             return FileUploadResult(
                 file_name=file_name,

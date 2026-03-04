@@ -1,62 +1,68 @@
 import os
 import re
+import uuid
 import base64
+from enum import Enum
 from pathlib import Path
-from datetime import datetime
 from dataclasses import dataclass
 from qdrant_client.http import models
-from typing import Any, Dict, List, Optional, Sequence, Union
+from pydantic import BaseModel, Field, ConfigDict
+from typing import Any, Dict, List, Optional, Tuple, Union
 
-from .models import TextChunk
+from .models import TextChunk, ChunkType, ChunkMetadata, ParentBlock
 
 
 class MarkdownProcessor:
-    """
-    Чанкер Markdown + расчёт эмбеддингов через fastembed.
-
-    Вход:
-      - строка Markdown
-      - base64(Markdown)
-      - путь к .md
-
-    Выход:
-      - List[TextChunk] (vector заполнен)
-
-    Примечание для E5:
-      - Для документов рекомендуется префикс "passage: "
-      - Для запросов — "query: "
-    """
-
     _BASE64_RE = re.compile(r"^[A-Za-z0-9+/=\s]+$")
-
+    
     def __init__(
         self,
         embedder,
         *,
-        chunk_size: int = 900,
-        chunk_overlap: int = 120,
+        child_size: int = 450,
+        child_overlap: int = 0,
+        parent_target_size: int = 1500,
         keep_headings: bool = True,
         keep_code_blocks: bool = True,
         batch_size: int = 64,
-        expected_dim: Optional[int] = None,
-    ) -> None:
-        if chunk_size <= 0:
-            raise ValueError("chunk_size должен быть > 0")
-        if chunk_overlap < 0 or chunk_overlap >= chunk_size:
-            raise ValueError("chunk_overlap должен быть >= 0 и < chunk_size")
-        if batch_size <= 0:
-            raise ValueError("batch_size должен быть > 0")
-
+        expected_dim: int = 1024,
+        parent_max_size: int = 2000
+    ):
+        """
+        Args:
+            embedder: Объект для эмбеддинга (с методом encode/embed)
+            child_size: Размер child-чанка для поиска
+            child_overlap: Перекрытие между child-чанками
+            parent_target_size: Целевой размер parent-блока
+            keep_headings: Сохранять заголовки
+            keep_code_blocks: Сохранять блоки кода
+            batch_size: Размер батча для эмбеддинга
+            expected_dim: Ожидаемая размерность эмбеддинга
+            parent_max_size: Максимальный размер parent-блока
+        """
         self._embedder = embedder
         self._expected_dim = expected_dim
-        self.chunk_size = chunk_size
-        self.chunk_overlap = chunk_overlap
+        self.child_size = child_size
+        self.child_overlap = child_overlap
+        self.parent_target_size = parent_target_size
         self.keep_headings = keep_headings
         self.keep_code_blocks = keep_code_blocks
         self.batch_size = batch_size
-
+        self.parent_max_size = parent_max_size
+        
+        self._validate_params()
+    
+    def _validate_params(self):
+        """Проверка параметров"""
+        if self.child_size <= 0:
+            raise ValueError("child_size должен быть > 0")
+        if self.child_overlap < 0 or self.child_overlap >= self.child_size:
+            raise ValueError("child_overlap должен быть >= 0 и < child_size")
+        if self.parent_target_size <= self.child_size:
+            raise ValueError("parent_target_size должен быть больше child_size")
+    
     # ---------------------------- Public API ----------------------------
-
+    
     def build_chunks(
         self,
         source: Union[str, os.PathLike[str]],
@@ -64,128 +70,42 @@ class MarkdownProcessor:
         source_name: Optional[str] = None,
         assume_base64_if_looks_like: bool = True,
         **kwargs
-    ) -> List[TextChunk]:
-        """
-        Полный пайплайн: загрузка -> чанки -> эмбеддинги -> List[TextChunk] с vector.
-        """
+    ) -> TextChunk:
         md_text, resolved_name = self._load_markdown(
             source,
             source_name=source_name,
             assume_base64_if_looks_like=assume_base64_if_looks_like,
         )
-        source_name = Path(resolved_name)
-        if source_name.exists():
-            resolved_name = source_name.name
-        md_text = self._normalize_newlines(md_text)
-
-        units = self._split_to_units(md_text)
-        texts = self._units_to_chunks(units)
-
-        # Подготовка строк для эмбеддинга (E5: passage/query префиксы)
-        kept_texts: List[str] = []
-        for t in texts:
-            tt = t.strip()
-            if not tt:
-                continue
-            kept_texts.append(tt)
-
-        vectors = self._embed(kept_texts, **kwargs)
-
-        chunks: List[TextChunk] = []
-        for i, (plain, vec) in enumerate(zip(kept_texts, vectors)):
-            chunks.append(
-                TextChunk(
-                    text=plain,
-                    index=i,
-                    metadata={
-                        "source": resolved_name,
-                        "embedding_model": getattr(self._embedder, "model_name", type(self._embedder).__name__),
-                        "embedding_dimension": len(vec),
-                        "chunk_size": self.chunk_size,
-                        "chunk_overlap": self.chunk_overlap,
-                        "created_at": datetime.now()
-                    },
-                    vector=vec,
-                )
-            )
-        return chunks
-
-    def embed_query(self, query_text: str, **kwargs) -> List[float]:
-        """
-        Утилита для эмбеддинга поискового запроса.
-        """
-        text = query_text.strip()
-        if not text:
-            raise ValueError("query_text пустой")
-        vecs = self._embed([text], **kwargs)
-        return vecs[0]
-
-    # ---------------------------- Embedding ----------------------------
-
-    def _embed(self, texts: List[str], **kwargs) -> List[List[float]]:
-        """
-        Считает эмбеддинги батчами через fastembed.
-        """
-        if not texts:
-            return []
-
-        out: List[List[float]] = []
-
-        # fastembed возвращает генератор np.ndarray; конвертируем в list[float]
-        # Используем батчирование на нашей стороне для предсказуемости по памяти.
-        for start in range(0, len(texts), self.batch_size):
-            batch = texts[start : start + self.batch_size]
-            if hasattr(self._embedder, "embed"):
-                for vec in self._embedder.embed(batch, **kwargs):
-                    v = vec.tolist()  # np.ndarray -> list[float]
-                    out.append(v)
-            elif hasattr(self._embedder, "encode"):
-                for vec in self._embedder.encode(batch, **kwargs):
-                    v = vec.tolist()  # np.ndarray -> list[float]
-                    out.append(v)
-            else: 
-                raise ValueError(
-                    f"Отсутствуют методы embed или encode для "
-                    f"модели {getattr(self._embedder, "model_name", type(self._embedder).__name__)}"
-                )
-        # (не обязательно) сверка размерности
-        if out and self._expected_dim and len(out[0]) != self._expected_dim:
-            # Не падаем всегда: в fastembed иногда модель может иметь иную фактическую размерность.
-            # Но для Qdrant полезно явно заметить расхождение.
-            raise ValueError(
-                f"Неожиданная размерность эмбеддинга: {len(out[0])} вместо {self._expected_dim} "
-                f"для модели {getattr(self._embedder, "model_name", type(self._embedder).__name__)}"
-            )
-
-        return out
-
-    # ---------------------------- Loading ----------------------------
-
+        doc_name = Path(resolved_name).name if Path(resolved_name).exists() else resolved_name
+        doc_id = f"{doc_name}_{uuid.uuid4()}"
+        elements = self._parse_markdown(md_text)
+        parents = self._create_parent_blocks(elements, doc_id, doc_name)
+        children = self._create_child_chunks(parents, doc_id, doc_name)
+        children = self._embed_chunks(children, **kwargs)
+        return children
+    
+    # ---------------------------- Загрузка ----------------------------
+    
     def _load_markdown(
         self,
         source: Union[str, os.PathLike[str]],
         *,
         source_name: Optional[str],
         assume_base64_if_looks_like: bool,
-    ) -> tuple[str, str]:
+    ) -> Tuple[str, str]:
         if isinstance(source, (Path, os.PathLike)):
             p = Path(source)
             return p.read_text(encoding="utf-8"), source_name or str(p)
-
         if not isinstance(source, str):
             raise TypeError("source должен быть str или path-like")
-
         s = source.strip()
-
         p = Path(s)
         if p.exists() and p.is_file():
             return p.read_text(encoding="utf-8"), source_name or str(p)
-
         if assume_base64_if_looks_like and self._looks_like_base64(s):
             decoded = self._try_decode_base64(s)
             if decoded is not None:
                 return decoded, source_name or "base64"
-
         return source, source_name or "inline"
 
     def _looks_like_base64(self, s: str) -> bool:
@@ -203,249 +123,417 @@ class MarkdownProcessor:
             return data.decode("utf-8")
         except Exception:
             return None
-
+    
     @staticmethod
     def _normalize_newlines(text: str) -> str:
         return text.replace("\r\n", "\n").replace("\r", "\n")
-
-    # ---------------------------- Chunking ----------------------------
-
-    @dataclass(frozen=True)
-    class _Unit:
-        kind: str  # "heading" | "para" | "code" | "blank"
+        
+    # ---------------------------- Парсинг Markdown ----------------------------
+    
+    class _ElementType(str, Enum):
+        HEADING = "heading"
+        PARAGRAPH = "paragraph"
+        TABLE = "table"
+        CODE = "code"
+        BLANK = "blank"
+    
+    class _ParsedElement(BaseModel):
+        type: "_ElementType"
         text: str
         heading_level: Optional[int] = None
         heading_text: Optional[str] = None
-
-    def _split_to_units(self, md: str) -> List[_Unit]:
-        lines = md.split("\n")
-        units: List[MarkdownProcessor._Unit] = []
-
+        table_data: Optional[Dict[str, Any]] = None
+        start_line: int = 0
+        end_line: int = 0
+        model_config = ConfigDict(arbitrary_types_allowed=True)
+    
+    def _parse_markdown(self, md_text: str) -> List[_ParsedElement]:
+        md_text = self._normalize_newlines(md_text)
+        lines = md_text.split("\n")
+        elements = []
         i = 0
         in_code = False
-        code_buf: List[str] = []
-        para_buf: List[str] = []
-
-        def flush_para() -> None:
-            nonlocal para_buf
-            if not para_buf:
-                return
-            text = "\n".join(para_buf).strip()
-            if text:
-                units.append(self._Unit(kind="para", text=text))
-            para_buf = []
-
+        code_buf = []
+        code_start = 0
         while i < len(lines):
             line = lines[i]
-
+            # Блоки кода
             fence_match = re.match(r"^(\s*)(```+|~~~+)\s*(.*)$", line)
             if fence_match:
                 if not in_code:
-                    flush_para()
                     in_code = True
                     code_buf = [line]
+                    code_start = i
                 else:
                     code_buf.append(line)
+                    elements.append(self._ParsedElement(
+                        type=self._ElementType.CODE,
+                        text="\n".join(code_buf),
+                        start_line=code_start,
+                        end_line=i
+                    ))
                     in_code = False
-                    if self.keep_code_blocks:
-                        units.append(self._Unit(kind="code", text="\n".join(code_buf).strip()))
-                    else:
-                        units.append(self._Unit(kind="code", text="[code block omitted]"))
                     code_buf = []
                 i += 1
                 continue
-
             if in_code:
                 code_buf.append(line)
                 i += 1
                 continue
-
-            h = re.match(r"^(#{1,6})\s+(.+?)\s*$", line)
-            if h:
-                flush_para()
-                level = len(h.group(1))
-                title = h.group(2).strip()
-                units.append(self._Unit(kind="heading", text=line.strip(), heading_level=level, heading_text=title))
+            # Заголовки
+            heading_match = re.match(r"^(#{1,6})\s+(.+?)\s*$", line)
+            if heading_match:
+                level = len(heading_match.group(1))
+                title = heading_match.group(2).strip()
+                elements.append(self._ParsedElement(
+                    type=self._ElementType.HEADING,
+                    text=line,
+                    heading_level=level,
+                    heading_text=title,
+                    start_line=i,
+                    end_line=i
+                ))
                 i += 1
                 continue
-
+            # Таблицы
+            if '|' in line and i + 1 < len(lines) and '|' in lines[i + 1]:
+                table_data = self._extract_table(lines, i)
+                if table_data:
+                    elements.append(self._ParsedElement(
+                        type=self._ElementType.TABLE,
+                        text=table_data["raw"],
+                        table_data=table_data,
+                        start_line=i,
+                        end_line=i + table_data["line_count"] - 1
+                    ))
+                    i += table_data["line_count"]
+                    continue
+            # Пустые строки
             if line.strip() == "":
-                flush_para()
-                units.append(self._Unit(kind="blank", text=""))
+                elements.append(self._ParsedElement(
+                    type=self._ElementType.BLANK,
+                    text="",
+                    start_line=i,
+                    end_line=i
+                ))
                 i += 1
                 continue
-
-            para_buf.append(line)
+            # Параграфы (собираем несколько строк)
+            para_lines = [line]
+            para_start = i
             i += 1
-
-        flush_para()
-
-        if in_code and code_buf:
-            if self.keep_code_blocks:
-                units.append(self._Unit(kind="code", text="\n".join(code_buf).strip()))
+            while i < len(lines):
+                next_line = lines[i]
+                if (next_line.startswith('#') or 
+                    ('|' in next_line and i + 1 < len(lines) and '|' in lines[i + 1]) or
+                    next_line.strip() == "" or
+                    re.match(r"^(\s*)(```+|~~~+)", next_line)):
+                    break
+                para_lines.append(next_line)
+                i += 1
+            elements.append(self._ParsedElement(
+                type=self._ElementType.PARAGRAPH,
+                text="\n".join(para_lines),
+                start_line=para_start,
+                end_line=i-1
+            ))
+        return elements
+    
+    def _extract_table(self, lines: List[str], start_idx: int) -> Optional[Dict[str, Any]]:
+        """Извлекает Markdown таблицу"""
+        table_lines = []
+        i = start_idx
+        while i < len(lines) and '|' in lines[i]:
+            table_lines.append(lines[i].strip())
+            i += 1
+        if len(table_lines) < 2:
+            return None
+        try:
+            # Простой парсинг для метаданных
+            headers = [h.strip() for h in table_lines[0].split('|') if h.strip()]
+            data_lines = table_lines[2:] if len(table_lines) > 2 else []
+            
+            return {
+                "raw": '\n'.join(table_lines),
+                "headers": headers,
+                "rows": len(data_lines),
+                "cols": len(headers),
+                "line_count": len(table_lines),
+                "has_numerical": False  # Можно определить позже
+            }
+        except Exception:
+            return None
+    
+    # ---------------------------- Создание Parent-блоков ----------------------------
+    
+    def _create_parent_blocks(
+        self,
+        elements: List[_ParsedElement],
+        doc_id: str,
+        doc_name: str
+    ) -> List[ParentBlock]:
+        parents = []
+        current_block = []
+        current_size = 0
+        block_start_pos = 0
+        block_index = 0
+        current_chapter = ""
+        current_chapter_index = 0
+        for i, elem in enumerate(elements):
+            elem_type = self._element_type_to_chunk_type(elem.type)
+            elem_size = len(elem.text)
+            if elem.type in [self._ElementType.TABLE, self._ElementType.CODE]:
+                if current_block:
+                    parents.extend(self._split_current_block(
+                        current_block, current_size, block_start_pos,
+                        doc_id, doc_name, current_chapter, current_chapter_index,
+                        block_index
+                    ))
+                    block_index += len(parents) - (block_index if parents else 0)
+                    current_block = []
+                    current_size = 0
+                parent_id = f"{doc_id}_{block_index}"
+                parents.append(ParentBlock(
+                    id=parent_id,
+                    text=elem.text,
+                    doc_id=doc_id,
+                    doc_name=doc_name,
+                    block_type=elem_type,
+                    chapter=current_chapter,
+                    chapter_index=current_chapter_index,
+                    start_position=i,
+                    table_markdown=elem.text if elem.type == self._ElementType.TABLE else None,
+                    code_language=None
+                ))
+                block_index += 1
+                block_start_pos = i + 1
+                continue
+            if elem.type == self._ElementType.HEADING:
+                if elem.heading_level == 1:
+                    current_chapter = elem.heading_text or f"Chapter {current_chapter_index}"
+                    current_chapter_index += 1
+            if current_size + elem_size > self.parent_max_size and current_block:
+                parents.extend(self._split_current_block(
+                    current_block, current_size, block_start_pos,
+                    doc_id, doc_name, current_chapter, current_chapter_index - 1,
+                    block_index
+                ))
+                block_index += len(parents) - (block_index if parents else 0)
+                current_block = []
+                current_size = 0
+                block_start_pos = i
+            current_block.append(elem)
+            current_size += elem_size
+        if current_block:
+            parents.extend(self._split_current_block(
+                current_block, current_size, block_start_pos,
+                doc_id, doc_name, current_chapter, current_chapter_index,
+                block_index
+            ))
+        return parents
+    
+    def _element_type_to_chunk_type(self, elem_type: "_ElementType") -> ChunkType:
+        mapping = {
+            self._ElementType.PARAGRAPH: ChunkType.TEXT,
+            self._ElementType.HEADING: ChunkType.TEXT,
+            self._ElementType.TABLE: ChunkType.TABLE,
+            self._ElementType.CODE: ChunkType.CODE,
+        }
+        return mapping.get(elem_type, ChunkType.TEXT)
+    
+    def _split_current_block(
+        self,
+        elements: List[_ParsedElement],
+        total_size: int,
+        start_pos: int,
+        doc_id: str,
+        doc_name: str,
+        chapter: str,
+        chapter_index: int,
+        start_idx: int
+    ) -> List[ParentBlock]:
+        if total_size <= self.parent_max_size:
+            text = "\n\n".join([e.text for e in elements if e.text.strip()])
+            parent_id = f"parent_{doc_id}_{start_idx}"
+            return [ParentBlock(
+                id=parent_id,
+                text=text,
+                doc_id=doc_id,
+                doc_name=doc_name,
+                block_type=ChunkType.TEXT,
+                chapter=chapter,
+                chapter_index=chapter_index,
+                start_position=start_pos
+            )]
+        blocks = []
+        current_text = []
+        current_size = 0
+        block_part = 0
+        for elem in elements:
+            elem_size = len(elem.text)
+            if current_size + elem_size > self.parent_max_size and current_text:
+                parent_id = f"parent_{doc_id}_{start_idx}_{block_part}"
+                blocks.append(ParentBlock(
+                    id=parent_id,
+                    text="\n\n".join(current_text),
+                    doc_id=doc_id,
+                    doc_name=doc_name,
+                    block_type=ChunkType.TEXT,
+                    chapter=chapter,
+                    chapter_index=chapter_index,
+                    start_position=start_pos + block_part
+                ))
+                block_part += 1
+                current_text = [elem.text]
+                current_size = elem_size
             else:
-                units.append(self._Unit(kind="code", text="[code block omitted]"))
-
-        return units
-
-    def _units_to_chunks(self, units: Sequence[_Unit]) -> List[str]:
-        sections: List[str] = []
-        current_lines: List[str] = []
-        heading_stack: List[str] = []
-
-        def flush_section() -> None:
-            txt = "\n".join(current_lines).strip()
-            if txt:
-                sections.append(txt)
-            current_lines.clear()
-
-        for u in units:
-            if u.kind == "heading":
-                flush_section()
-
-                if not self.keep_headings:
-                    heading_stack = []
-                else:
-                    level = u.heading_level or 1
-                    while len(heading_stack) >= level:
-                        heading_stack.pop()
-                    heading_stack.append(u.heading_text or "")
-
-                if self.keep_headings and heading_stack:
-                    prefix = " > ".join([h for h in heading_stack if h])
-                    if prefix:
-                        current_lines.append(f"# {prefix}")
-                current_lines.append(u.text)
-
-            elif u.kind == "blank":
-                if current_lines and current_lines[-1] != "":
-                    current_lines.append("")
-            else:
-                current_lines.append(u.text)
-
-        flush_section()
-
-        chunks: List[str] = []
-        for sec in sections:
-            chunks.extend(self._split_by_size(sec))
-
-        return [c.strip() for c in chunks if c.strip()]
-
-    def _split_by_size(self, text: str) -> List[str]:
-        if len(text) <= self.chunk_size:
+                current_text.append(elem.text)
+                current_size += elem_size
+        if current_text:
+            parent_id = f"parent_{doc_id}_{start_idx}_{block_part}"
+            blocks.append(ParentBlock(
+                id=parent_id,
+                text="\n\n".join(current_text),
+                doc_id=doc_id,
+                doc_name=doc_name,
+                block_type=ChunkType.TEXT,
+                chapter=chapter,
+                chapter_index=chapter_index,
+                start_position=start_pos + block_part
+            ))
+        return blocks
+    
+    # ---------------------------- Создание Child-чанков ----------------------------
+    
+    def _create_child_chunks(
+        self,
+        parents: List[ParentBlock],
+        doc_id: str,
+        doc_name: str
+    ) -> List[TextChunk]:
+        children = []
+        chunk_position = 0
+        for parent in parents:
+            if parent.block_type in [ChunkType.TABLE, ChunkType.CODE]:
+                child = TextChunk(
+                    text=parent.text,
+                    metadata= ChunkMetadata(
+                        parent_id=parent.id,
+                        doc_id=doc_id,
+                        doc_name=doc_name,
+                        chunk_type=parent.block_type,
+                        position=chunk_position
+                    )
+                )
+                children.append(child)
+                chunk_position += 1
+                continue
+            chunks = self._split_text_into_chunks(parent.text)
+            for i, chunk_text in enumerate(chunks):
+                child = TextChunk(
+                    text=chunk_text,
+                    metadata=ChunkMetadata(
+                        parent_id=parent.id,
+                        doc_id=doc_id,
+                        doc_name=doc_name,
+                        chunk_type=ChunkType.TEXT,
+                        position=chunk_position + i
+                    )
+                )
+                children.append(child)
+            chunk_position += len(chunks)
+        return children
+    
+    def _split_text_into_chunks(self, text: str) -> List[str]:
+        if len(text) <= self.child_size:
             return [text]
-
-        blocks = re.split(r"\n{2,}", text)
-        blocks = [b.strip() for b in blocks if b.strip()]
-
-        chunks: List[str] = []
-        buf: List[str] = []
-        buf_len = 0
-
-        def flush_buf() -> None:
-            nonlocal buf, buf_len
-            if not buf:
-                return
-            chunks.append("\n\n".join(buf).strip())
-            buf = []
-            buf_len = 0
-
-        for b in blocks:
-            add_len = len(b) + (2 if buf else 0)
-
-            if buf_len + add_len <= self.chunk_size:
-                buf.append(b)
-                buf_len += add_len
-                continue
-
-            # блок больше chunk_size и буфер пуст
-            if not buf and len(b) > self.chunk_size:
-                chunks.extend(self._hard_split(b))
-                continue
-
-            flush_buf()
-
-            # overlap
-            if self.chunk_overlap > 0 and chunks:
-                ov = self._take_overlap(chunks[-1], self.chunk_overlap)
-                if ov:
-                    buf = [ov]
-                    buf_len = len(ov)
-
-            # добавляем текущий блок
-            if len(b) <= self.chunk_size:
-                if buf and (buf_len + len(b) + 2 > self.chunk_size):
-                    buf = [b]
-                    buf_len = len(b)
-                else:
-                    if buf:
-                        buf_len += 2
-                    buf.append(b)
-                    buf_len += len(b)
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        chunks = []
+        current_chunk = []
+        current_size = 0
+        for sent in sentences:
+            sent_size = len(sent)
+            if current_size + sent_size <= self.child_size:
+                current_chunk.append(sent)
+                current_size += sent_size + 1
             else:
-                if buf:
-                    flush_buf()
-                chunks.extend(self._hard_split(b))
-
-        flush_buf()
-        return chunks
-
-    def _hard_split(self, text: str) -> List[str]:
-        lines = text.split("\n")
-        chunks: List[str] = []
-        cur: List[str] = []
-        cur_len = 0
-
-        def flush() -> None:
-            nonlocal cur, cur_len
-            if cur:
-                chunks.append("\n".join(cur).strip())
-            cur = []
-            cur_len = 0
-
-        for line in lines:
-            add_len = len(line) + (1 if cur else 0)
-            if cur_len + add_len <= self.chunk_size:
-                if cur:
-                    cur_len += 1
-                cur.append(line)
-                cur_len += len(line)
-            else:
-                flush()
-                if len(line) > self.chunk_size:
-                    chunks.extend(self._split_string_fixed(line, self.chunk_size, self.chunk_overlap))
+                if current_chunk:
+                    chunks.append(" ".join(current_chunk))
+                overlap = self._get_overlap_from_previous(chunks[-1]) if chunks else ""
+                if overlap:
+                    current_chunk = [overlap]
+                    current_size = len(overlap)
                 else:
-                    cur = [line]
-                    cur_len = len(line)
-
-        flush()
+                    current_chunk = []
+                    current_size = 0
+                current_chunk.append(sent)
+                current_size += len(sent)
+        if current_chunk:
+            chunks.append(" ".join(current_chunk))
         return chunks
-
-    def _take_overlap(self, text: str, overlap: int) -> str:
-        if overlap <= 0:
+    
+    def _get_overlap_from_previous(self, previous_chunk: str) -> str:
+        if self.child_overlap <= 0:
             return ""
-        if len(text) <= overlap:
-            return text
-
-        suffix = text[-overlap:]
-        idx = suffix.find("\n")
-        if idx != -1 and idx + 1 < len(suffix):
-            return suffix[idx + 1 :].strip()
-        sp = suffix.find(" ")
-        if sp != -1 and sp + 1 < len(suffix):
-            return suffix[sp + 1 :].strip()
-        return suffix.strip()
-
-    def _split_string_fixed(self, s: str, size: int, overlap: int) -> List[str]:
-        res: List[str] = []
-        step = max(1, size - max(0, overlap))
-        for start in range(0, len(s), step):
-            part = s[start : start + size].strip()
-            if part:
-                res.append(part)
-            if start + size >= len(s):
+        words = previous_chunk.split()
+        overlap_words = []
+        overlap_size = 0
+        for word in reversed(words):
+            if overlap_size + len(word) + 1 <= self.child_overlap:
+                overlap_words.insert(0, word)
+                overlap_size += len(word) + 1
+            else:
                 break
-        return res
+        return " ".join(overlap_words)
+    
+    # ---------------------------- Эмбеддинг ----------------------------
+    
+    def _embed_chunks(
+        self,
+        chunks: List[TextChunk],
+        **kwargs
+    ) -> List[TextChunk]:
+        if not chunks:
+            return chunks
+        texts = [chunk.text for chunk in chunks]
+        vectors = self._embed(texts, **kwargs)
+        for chunk, vector in zip(chunks, vectors):
+            chunk.vector = vector
+        return chunks
+    
+    def _embed(self, texts: List[str], **kwargs) -> List[List[float]]:
+        if not texts:
+            return []
+        out = []
+        for start in range(0, len(texts), self.batch_size):
+            batch = texts[start:start + self.batch_size]
+            if hasattr(self._embedder, "encode"):
+                for vec in self._embedder.encode(batch, **kwargs):
+                    if hasattr(vec, "tolist"):
+                        out.append(vec.tolist())
+                    else:
+                        out.append(vec)
+            elif hasattr(self._embedder, "embed"):
+                for vec in self._embedder.embed(batch, **kwargs):
+                    if hasattr(vec, "tolist"):
+                        out.append(vec.tolist())
+                    else:
+                        out.append(vec)
+            else:
+                raise ValueError("Embedder должен иметь метод encode или embed")
+        if out and self._expected_dim and len(out[0]) != self._expected_dim:
+            raise ValueError(
+                f"Неожиданная размерность эмбеддинга: {len(out[0])} вместо {self._expected_dim}"
+            )
+        return out
+    
+    # ---------------------------- Вспомогательные методы ----------------------------
+    
+    def embed_query(self, query: str, **kwargs) -> List[float]:
+        if not query.strip():
+            raise ValueError("Запрос не может быть пустым")
+        vectors = self._embed([query], **kwargs)
+        return vectors[0]
 
 
 class FilterBuilder:

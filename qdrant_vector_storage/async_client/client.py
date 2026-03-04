@@ -5,7 +5,6 @@ Asynchronous Qdrant client implementation.
 import os
 import uuid
 import logging
-from datetime import datetime
 from typing import Optional, List, Dict, Any, Union, Literal
 
 from qdrant_client import AsyncQdrantClient
@@ -176,7 +175,6 @@ class QdrantAsyncClient:
         processor: MarkdownProcessor,
         *,
         source_name: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
         batch_size: int = 100,
         wait: bool = True,
         processor_kwargs: Optional[Dict[str, Any]] = None,
@@ -194,21 +192,15 @@ class QdrantAsyncClient:
         """
         if not collection_name:
             raise ValueError("collection_name cannot be empty")
-
         if not await self.client.collection_exists(collection_name):
             raise CollectionNotFoundError(f"Collection '{collection_name}' not found")
-
         if processor is None:
             raise ValueError("processor cannot be None")
-
         try:
-            # 1) Обработка markdown -> чанки с векторами
             try:
                 pk = processor_kwargs or {}
-                # Ожидаем API как в предыдущем решении:
-                # processor.build_chunks(...) -> List[TextChunk] (text/index/metadata/vector)
                 chunks = processor.build_chunks(
-                    md_input,
+                    source=md_input,
                     source_name=source_name,
                     **pk,
                 )
@@ -218,16 +210,10 @@ class QdrantAsyncClient:
                 ) from e
             except Exception as e:
                 raise FileProcessingError(f"Failed to process markdown: {e}") from e
-
             if not chunks:
                 raise FileProcessingError("No text content extracted from markdown input")
-
-            # 2) Превращаем чанки -> points
-            base_meta: Dict[str, Any] = dict(metadata or {})
-            if source_name:
-                base_meta.setdefault("source", source_name)
             try:
-                points = chunks_to_points(chunks, base_metadata=base_meta)
+                points = chunks_to_points(chunks)
             except Exception as e:
                 raise EmbeddingError(f"Failed to build points from chunks: {e}") from e
             point_ids = await self.upload_points(
