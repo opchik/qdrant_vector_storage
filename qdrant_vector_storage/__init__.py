@@ -7,6 +7,7 @@ from .sync_client.client import QdrantSyncClient
 from .async_client.client import QdrantAsyncClient
 
 from .common.base import MarkdownProcessor, FilterBuilder
+from .common.converters import chunks_to_points
 from .common.models import (
     Point,
     SearchResult,
@@ -25,7 +26,7 @@ from .common.exceptions import (
     ConnectionError,
 )
 
-__version__ = "0.1.1"
+__version__ = "0.2.1"
 
 __all__ = [
     "QdrantSyncClient",
@@ -45,4 +46,5 @@ __all__ = [
     "UnsupportedFileTypeError",
     "EmbeddingError",
     "ConnectionError",
+    "chunks_to_points"
 ]
