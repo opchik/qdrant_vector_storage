@@ -99,9 +99,10 @@ class MarkdownProcessor:
         if not isinstance(source, str):
             raise TypeError("source должен быть str или path-like")
         s = source.strip()
-        p = Path(s)
-        if p.exists() and p.is_file():
-            return p.read_text(encoding="utf-8"), source_name or str(p)
+        if len(s) < 256:
+            p = Path(s)
+            if p.exists() and p.is_file():
+                return p.read_text(encoding="utf-8"), source_name or str(p)
         if assume_base64_if_looks_like and self._looks_like_base64(s):
             decoded = self._try_decode_base64(s)
             if decoded is not None:
